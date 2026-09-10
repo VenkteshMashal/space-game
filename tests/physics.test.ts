@@ -1,9 +1,13 @@
 import { describe, expect, test } from 'bun:test';
-import { canDock, canRecover, createCargo, createShip, emptyInput, length, resolveCollision, SHIPS, STATION, stepShip } from '../src/physics';
+import { canDock, canRecover, createCargo, createShip, emptyInput, length, resolveCollision, rockHp, rockMass, ROCK_MIN_R, SHIPS, splitRock, STATION, stepShip } from '../src/physics';
+import type { Rock, ShipState } from '../src/physics';
 
-function advance(ship: ReturnType<typeof createShip>, input = emptyInput(), seconds = 1) {
+function advance(ship: ShipState, input = emptyInput(), seconds = 1) {
   for (let i = 0; i < seconds * 120; i++) stepShip(ship, input, 1 / 120);
 }
+
+const makeRock = (radius: number, over: Partial<Rock> = {}): Rock =>
+  ({ id: 1, x: 0, y: 0, vx: 0, vy: 0, radius, hp: rockHp(radius), mass: rockMass(radius), seed: 1, z: 0, ...over });
 
 describe('Newtonian flight', () => {
   test('a coasting ship preserves velocity, fuel and angular momentum without assist', () => {
@@ -64,16 +68,58 @@ describe('Newtonian flight', () => {
 });
 
 describe('collision and recovery boundaries', () => {
-  test('high-speed impacts damage the hull and rebound from the surface', () => {
+  test('high-speed impacts damage the hull and leave the ship clear of the surface', () => {
     const ship = createShip(); ship.position = { x: 20, y: 0 }; ship.velocity = { x: -25, y: 0 };
-    const damage = resolveCollision(ship, { x: 0, y: 0, radius: 20, z: 0, seed: 1 });
+    const rock = makeRock(20);
+    const damage = resolveCollision(ship, rock);
     expect(damage).toBeGreaterThan(0); expect(ship.hull).toBeLessThan(100); expect(ship.velocity.x).toBeGreaterThan(0);
-    expect(ship.position.x).toBeGreaterThan(30);
+    expect(ship.position.x).toBeGreaterThan(20);                                            // the ship is pushed outward
+    expect(rock.x).toBeLessThan(0);                                                         // and the rock recoils the other way
+    expect(Math.hypot(ship.position.x - rock.x, ship.position.y - rock.y)).toBeGreaterThan(rock.radius * 0.83);
+  });
+
+  test('a light rock is thrown aside by a heavy ship while a heavy rock is not', () => {
+    const pebble = makeRock(4, { id: 2 });
+    const light = createShip(); light.position = { x: 15, y: 0 }; light.velocity = { x: -20, y: 0 };
+    resolveCollision(light, pebble);
+
+    const monolith = makeRock(60, { id: 3 });
+    const heavy = createShip(); heavy.position = { x: 20, y: 0 }; heavy.velocity = { x: -20, y: 0 };
+    resolveCollision(heavy, monolith);
+
+    expect(pebble.vx).toBeLessThan(-10);
+    expect(Math.abs(monolith.vx)).toBeLessThan(0.5);
+    expect(Math.abs(pebble.vx)).toBeGreaterThan(Math.abs(monolith.vx) * 10);
+  });
+
+  test('splitting conserves the centre of mass and roughly conserves area', () => {
+    const parent = makeRock(30, { id: 9, vx: 7, vy: -4 });
+    let next = 100;
+    const children = splitRock(parent, 0, () => next++);
+    expect(children).toHaveLength(3);
+    expect(children.map(c => c.id)).toEqual([100, 101, 102]);
+
+    const totalMass = children.reduce((sum, c) => sum + c.mass, 0);
+    expect(totalMass).toBeLessThan(parent.mass);                       // area loss is the dust the shot made
+    expect(totalMass).toBeGreaterThan(parent.mass * 0.75);
+    // Evenly spaced kicks cancel, so the debris cloud keeps the parent's velocity.
+    expect(children.reduce((sum, c) => sum + c.mass * c.vx, 0) / totalMass).toBeCloseTo(parent.vx, 6);
+    expect(children.reduce((sum, c) => sum + c.mass * c.vy, 0) / totalMass).toBeCloseTo(parent.vy, 6);
+
+    const areaRatio = children.reduce((sum, c) => sum + c.radius * c.radius, 0) / (parent.radius * parent.radius);
+    expect(areaRatio).toBeGreaterThanOrEqual(0.75);
+    expect(areaRatio).toBeLessThanOrEqual(1);
+    expect(children.every(c => c.hp > 0 && c.mass > 0 && c.z === 0)).toBe(true);
+  });
+
+  test('a rock too small to fracture turns to dust instead', () => {
+    const dust = makeRock(ROCK_MIN_R / 0.62 - 1);
+    expect(splitRock(dust, 0, () => 1)).toEqual([]);
   });
 
   test('background rocks never cause planar collisions', () => {
     const ship = createShip(); ship.velocity.x = 20;
-    expect(resolveCollision(ship, { x: 0, y: 0, radius: 50, z: -100, seed: 1 })).toBe(0);
+    expect(resolveCollision(ship, makeRock(50, { z: -100 }))).toBe(0);
     expect(ship.hull).toBe(100); expect(ship.velocity.x).toBe(20);
   });
 
