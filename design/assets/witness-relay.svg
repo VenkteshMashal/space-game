@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" role="img" aria-labelledby="title desc">
+  <title id="title">Witness Array — relay construction study</title>
+  <desc id="desc">Original design of three incomplete offset ceramic rings around a basalt core. Openings form flyable corridors. Cyan filaments are light, not force fields.</desc>
+  <defs>
+    <linearGradient id="ceramic" x2=".8" y2="1"><stop stop-color="#dfebe9"/><stop offset=".45" stop-color="#849a9c"/><stop offset="1" stop-color="#344752"/></linearGradient>
+    <pattern id="ribs" width="24" height="24" patternUnits="userSpaceOnUse"><path d="M0 0V24" stroke="#050b12" stroke-width="4"/></pattern>
+  </defs>
+  <rect width="1200" height="800" fill="#050b12"/>
+  <g font-family="Barlow,Segoe UI,sans-serif" fill="#dfebe9">
+    <text x="64" y="75" font-size="36">Witness Array</text><text x="64" y="108" font-size="18" fill="#83cbd3">Relay / orthographic construction study</text>
+    <text x="64" y="752" font-size="16" fill="#9aacb5">DRIFT original design • metres in gameplay plane • segmented ribs, open passages</text>
+  </g>
+  <g transform="translate(454 408) rotate(-18)">
+    <circle r="246" fill="none" stroke="#203542" stroke-width="54" stroke-dasharray="440 150 500 460" transform="translate(5 12)"/>
+    <circle r="246" fill="none" stroke="url(#ceramic)" stroke-width="42" stroke-dasharray="440 150 500 460"/>
+    <circle r="246" fill="none" stroke="#83cbd3" stroke-width="2" stroke-dasharray="430 170 480 470"/>
+    <g transform="translate(35 -18) rotate(72)">
+      <circle r="166" fill="none" stroke="#233843" stroke-width="50" transform="translate(4 8)" stroke-dasharray="310 135 285 315"/>
+      <circle r="166" fill="none" stroke="url(#ceramic)" stroke-width="34" stroke-dasharray="310 135 285 315"/>
+      <circle r="166" fill="none" stroke="#83cbd3" stroke-width="2" stroke-dasharray="295 150 280 320"/>
+    </g>
+    <g transform="translate(5 24) rotate(195)">
+      <circle r="86" fill="none" stroke="url(#ceramic)" stroke-width="30" stroke-dasharray="180 85 170 106"/>
+      <circle r="86" fill="none" stroke="#83cbd3" stroke-width="2" stroke-dasharray="180 85 170 106"/>
+    </g>
+    <path d="M-22-37L20-30 42 12 8 40-33 19Z" fill="#24343b" stroke="#637d86" stroke-width="3"/>
+    <path d="M-10-20L11-13 19 11-4 18Z" fill="#83cbd3"/>
+    <g fill="#152834" stroke="#627d86" stroke-width="2">
+      <path d="M-251-53L-208-42-198-15-264-21Z"/><path d="M188-163L218-140 243-169 210-199Z"/>
+      <path d="M-88 198L-72 248-34 263-39 214Z"/>
+    </g>
+  </g>
+  <g fill="none" stroke="#718f9b" stroke-width="1.5">
+    <path d="M620 222H793L827 191H1110"/><path d="M542 432H790L827 403H1110"/>
+    <path d="M634 576H791L827 564H1110"/><path d="M207 695H701M207 684V706M701 684V706"/>
+  </g>
+  <g fill="#dfebe9" font-family="Barlow,Segoe UI,sans-serif" font-size="19">
+    <text x="827" y="175">Ceramic ribs</text><text x="827" y="219" font-size="15" fill="#9aacb5">Solid, scarred, individually lit</text>
+    <text x="827" y="386">Dormant basalt core</text><text x="827" y="431" font-size="15" fill="#9aacb5">Mechanical joints, quiet signal</text>
+    <text x="827" y="547">Offset apertures</text><text x="827" y="592" font-size="15" fill="#9aacb5">Flyable gaps; no invisible disk</text>
+    <text x="400" y="728" font-size="16">480 m outer span</text>
+  </g>
+</svg>

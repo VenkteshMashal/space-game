@@ -1,0 +1,90 @@
+{
+  "results": [
+    {
+      "label": "flight 1440x900",
+      "issues": []
+    },
+    {
+      "label": "lobby 1440x900",
+      "issues": []
+    },
+    {
+      "label": "hangar 1440x900",
+      "issues": []
+    },
+    {
+      "label": "flight 1366x768",
+      "issues": []
+    },
+    {
+      "label": "lobby 1366x768",
+      "issues": []
+    },
+    {
+      "label": "hangar 1366x768",
+      "issues": []
+    },
+    {
+      "label": "flight 390x844",
+      "issues": []
+    },
+    {
+      "label": "lobby 390x844",
+      "issues": []
+    },
+    {
+      "label": "lobby mission 390x844",
+      "issues": []
+    },
+    {
+      "label": "hangar 390x844",
+      "issues": []
+    },
+    {
+      "label": "flight 844x390",
+      "issues": []
+    },
+    {
+      "label": "lobby 844x390",
+      "issues": []
+    },
+    {
+      "label": "hangar 844x390",
+      "issues": []
+    },
+    {
+      "label": "flight 320x568",
+      "issues": []
+    },
+    {
+      "label": "lobby 320x568",
+      "issues": []
+    },
+    {
+      "label": "lobby mission 320x568",
+      "issues": []
+    },
+    {
+      "label": "hangar 320x568",
+      "issues": []
+    },
+    {
+      "label": "flight 568x320",
+      "issues": []
+    },
+    {
+      "label": "lobby 568x320",
+      "issues": []
+    },
+    {
+      "label": "lobby mission 568x320",
+      "issues": []
+    },
+    {
+      "label": "hangar 568x320",
+      "issues": []
+    }
+  ],
+  "errors": [],
+  "scope": "Headless Chrome with software WebGL. No real LAN, physical phone performance or full release accessibility claim."
+}

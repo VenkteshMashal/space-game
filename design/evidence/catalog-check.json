@@ -1,0 +1,39 @@
+{
+  "catalog": {
+    "chassis": 3,
+    "parts": 23,
+    "weaponBehaviors": 7,
+    "referenceFits": [
+      {
+        "id": "escort",
+        "cost": 90,
+        "wetMassKg": 111100,
+        "idleMW": 1.7000000000000002,
+        "accelerationMS2": 14.4
+      },
+      {
+        "id": "scout",
+        "cost": 98,
+        "wetMassKg": 69200,
+        "idleMW": 1.8,
+        "accelerationMS2": 30.35
+      },
+      {
+        "id": "rescue",
+        "cost": 108,
+        "wetMassKg": 189300,
+        "idleMW": 1.7000000000000002,
+        "accelerationMS2": 12.94
+      }
+    ]
+  },
+  "calculations": {
+    "snapshotPayloadKiBPerClientSecond": 220,
+    "eightClientPayloadMiBSecond": 1.71875,
+    "legacyReplayStepsPerSecond": 60,
+    "requiredSimulationStepsPerSecond": 120,
+    "legacyReplayCoverage": 0.5,
+    "bulletDistancePerTickAt700MuzzlePlus2000InheritedMS": 22.5,
+    "note": "A 22.5 m bullet step can cross a narrow target; endpoint checks are insufficient. These are calculations, not measured LAN results."
+  }
+}

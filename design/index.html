@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#050b12"><title>DRIFT / design review</title><link rel="icon" href="../public/favicon.svg"><link rel="stylesheet" href="./prototype.css"></head>
+<body>
+  <header class="review"><span class="review-label">Design fixture</span><nav aria-label="Design screens"><button data-screen="flight" aria-pressed="true">Flight</button><button data-screen="lobby" aria-pressed="false">Lobby</button><button data-screen="hangar" aria-pressed="false">Hangar</button></nav><button id="link-state" aria-pressed="false">Link: online</button></header>
+  <main id="stage" data-view="flight">
+    <canvas id="space" aria-label="Lit spacecraft and Witness relay design preview"></canvas>
+    <div class="shade" aria-hidden="true"></div>
+    <section id="flight" class="screen" aria-label="Flight HUD">
+      <header class="flight-top"><div><span class="brand">DRIFT</span><span class="chapter">Listening stone</span><p id="objective">Scan the relay <span>2 / 3 nodes</span></p></div><div class="crew-summary"><span class="signal-dot"></span> 4 crew aboard<br><small>Witness sector / 06:42</small></div></header>
+      <div class="target" aria-hidden="true"><span class="bracket">⌜</span><div>Witness relay<small>Unknown · 840 m</small></div><span class="bracket">⌝</span></div>
+      <div class="nav-pin"><i></i><span>Vesper<small>Carrier · 1.2 km</small></span></div>
+      <div id="notice" class="notice" role="status" hidden>Reconnecting… Your ship is coasting.</div>
+      <footer class="flight-bottom">
+        <div class="radar" aria-label="Illustrative sensor contacts"><svg viewBox="0 0 140 140" aria-hidden="true"><g fill="none" stroke="#466774"><circle cx="70" cy="70" r="61"/><circle cx="70" cy="70" r="31"/><path d="M9 70H131M70 9V131"/></g><path d="M70 62L65 77 75 77Z" fill="#dfebe9"/><g fill="#83cbd3"><circle cx="32" cy="92" r="3"/><circle cx="105" cy="80" r="3"/></g><path d="M88 28l4 4-4 4-4-4Z" fill="#e8b56e"/></svg><span>Passive / 1.5 km</span></div>
+        <div class="instruments"><div class="velocity"><span>Relative speed</span><strong>148<span> m/s</span></strong><small>Coasting / assist on</small></div><div class="resource"><span>Hull <b>135 / 135</b></span><meter min="0" max="135" value="135">135</meter><span>Propellant <b>82%</b></span><meter min="0" max="100" value="82">82%</meter><span>Thermal <b>36%</b></span><meter class="heat" min="0" max="100" value="36">36%</meter></div></div>
+        <div class="weapon-hud"><span>Primary / Rivet 30</span><strong>48 <small>/ 300</small></strong><button id="scan">Scan node <kbd>F</kbd></button></div>
+      </footer>
+    </section>
+    <section id="lobby" class="screen menu-screen" aria-label="Crew lobby" hidden>
+      <header class="screen-heading"><div><span class="brand">DRIFT</span><h1>Assemble your crew</h1></div><span class="room-tag">Wayfarer / 4 of 8</span></header>
+      <div class="lobby-layout" data-pane="crew">
+        <nav class="lobby-tabs" aria-label="Lobby pages"><button data-lobby-pane="crew" aria-pressed="true">Crew</button><button data-lobby-pane="mission" aria-pressed="false">Mission</button></nav>
+        <div class="roster-panel"><div class="panel-heading"><h2>Crew manifest</h2><span id="roster-page-label">1 / 2</span></div><div id="roster"></div><div class="pager"><button id="crew-prev" aria-label="Previous crew page">Previous</button><span>8 available seats</span><button id="crew-next" aria-label="Next crew page">Next</button></div></div>
+        <div class="mission-panel"><span class="mission-number">Mission 03</span><h2>Listening<br>stone</h2><p>The signal isn't a distress call.<br>Something here is still working.</p><div class="mission-facts"><span>Co-op campaign</span><span>8–15 minutes</span></div><p class="lobby-address">Host: 192.168.1.24:8080 <small>Illustrative address</small></p><button id="copy-address">Copy sample address</button></div>
+      </div>
+      <footer class="menu-footer"><span id="ready-status" role="status">Your fit is cleared for deployment.</span><button id="ready" class="primary" aria-pressed="false">Ready up</button></footer>
+    </section>
+    <section id="hangar" class="screen menu-screen" aria-label="Ship fitting" hidden>
+      <header class="screen-heading"><div><span class="brand">DRIFT</span><h1>Kestrel <small>Escort corvette</small></h1></div><span class="room-tag">Fitting bay 02</span></header>
+      <div class="hangar-layout"><div class="ship-caption"><span class="slot-marker">W1</span><span>Forward hardpoint<small>Size 2 / gimballed mount</small></span></div><div class="fit-panel"><div class="panel-heading"><h2>Primary weapon</h2><span id="part-page">1 / 3</span></div><h3 id="part-name">Rivet 30</h3><p id="part-role">A forgiving ballistic stream. Reliable escort fire, with room left for utility systems.</p><dl id="part-stats"></dl><p id="fit-effect" class="effect"></p><div class="pager"><button id="part-prev" aria-label="Previous weapon">Previous</button><button id="part-next" aria-label="Next weapon">Next weapon</button></div></div></div>
+      <footer class="menu-footer"><span id="fit-status" role="status">Preview changes before committing your fit.</span><button id="fit" class="primary">Fit Rivet 30</button></footer>
+    </section>
+    <div id="toast" role="status" hidden></div>
+  </main>
+  <script type="module" src="./prototype.js"></script>
+</body></html>
