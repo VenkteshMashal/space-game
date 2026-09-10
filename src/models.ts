@@ -1,8 +1,15 @@
 import * as THREE from 'three';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { rockyTexture } from './textures';
-import { defaultLoadout, randomSeed } from './physics';
-import type { Loadout, ShipClass } from './physics';
+import { randomSeed } from './shared/rng';
+
+/** Chassis identity, matching the catalog's chassis ids one-for-one. */
+export type ShipClass = 'kestrel' | 'mule' | 'needle';
+/** Model-level proportions and paint for one hull; the catalog owns the fitted statistics. */
+export type Loadout = { chassis: ShipClass; hullPts: number; thrustPts: number; fuelPts: number; torquePts: number; color: string };
+
+export const defaultLoadout = (chassis: ShipClass = 'kestrel'): Loadout =>
+  ({ chassis, hullPts: 2.5, thrustPts: 2.5, fuelPts: 2.5, torquePts: 2.5, color: '#dce6e8' });
 
 const armor = new THREE.MeshStandardMaterial({ color: '#bac4c3', roughness: 0.64, metalness: 0.55 });
 const lightArmor = new THREE.MeshStandardMaterial({ color: '#e2e3d8', roughness: 0.52, metalness: 0.4 });

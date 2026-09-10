@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { randomSeed } from './physics';
+import { randomSeed } from './shared/rng';
 
 function hash(x: number, y: number) {
   let h = Math.imul(x, 374761393) + Math.imul(y, 668265263);

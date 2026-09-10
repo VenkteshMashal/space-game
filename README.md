@@ -1,22 +1,48 @@
-# DRIFT — Belt operations
+# DRIFT
 
-A playable 2.5D spaceflight game built with **Bun, TypeScript, Vite and Three.js**. Fly a working corvette through an asteroid field, recover three lost survey archives and return to Wayfarer station — or host a LAN deathmatch with breakable asteroids and guns.
+Eight browser players on a Windows-hosted LAN, offline play with bots, a six-mission cooperative
+campaign and two-team PvP, flown with physical modular ships. Built with **Bun, TypeScript, Vite and
+Three.js**.
 
-## Run locally
+`PLAN-A-SHELL.md` (presentation, input, accessibility) and `PLAN-B-MULTIPLAYER.md` (rules, units,
+protocol, saves) are the specifications this code implements; `PLAN.md` is the earlier solo game and
+is kept as history. `design/` holds the frozen review record: the shared contract, the parts catalog,
+the interactive prototype and the alien relay art.
+
+## Run it
 
 ```sh
 bun install
-bun run dev
+bun run dev          # development server on http://127.0.0.1:5173
 ```
 
-Open the local URL printed by Vite, normally http://127.0.0.1:5173.
+Open the printed URL. The title screen offers **Resume campaign**, **Play offline**, **Join LAN**,
+**Host guide** and **Settings**. Nothing connects until you choose a mode — there is no silent
+fallback to a solo game.
 
-On this Windows machine, Bun is installed at `C:\Users\venkteshmashal\.bun\bin\bun.exe`. If your shell does not include Bun in its PATH, use:
+## Host a LAN game
 
-```powershell
-& "$env:USERPROFILE\.bun\bin\bun.exe" install
-& "$env:USERPROFILE\.bun\bin\bun.exe" run dev
+```sh
+bun run host         # builds, then serves assets, /health, /api/info and /ws on one port (8080)
 ```
+
+The host prints two addresses and a QR code:
+
+- **Operator** (`http://localhost:8080/#op=…`) — open this one on the hosting PC. The fragment is a
+  one-use claim: it makes that browser the room captain, is consumed over loopback, and is erased
+  from the address bar immediately.
+- **Guests** (`http://<your-wi-fi-address>:8080`) — anyone on the same network opens this, picks a
+  callsign and joins. Handheld players can scan the QR.
+
+Windows Firewall prompts on the first launch; allow Bun on **private** networks or other PCs cannot
+reach port 8080. `docs/LAN.md` covers the firewall, adapter selection, VPN conflicts, room codes and
+how to stop the host safely, and `Start-DRIFT.cmd` / `Stop-DRIFT.cmd` wrap the whole flow for the
+operator.
+
+A match: pick a fleet, spend a 110-point build budget, ready up, and the captain launches. Two teams
+to 30 kills or ten minutes; respawn after five seconds. `P` opens the menu, `Escape` closes one layer,
+`Tab` is menu navigation, `M` the map, `V` cinematic, `H` the flight manual, `G` (hold) the
+scoreboard.
 
 ## Fly
 
@@ -25,87 +51,60 @@ On this Windows machine, Bun is installed at `C:\Users\venkteshmashal\.bun\bin\b
 | W / S or ↑ / ↓ | Main drive / reverse thrusters |
 | A / D or ← / → | Rotate the ship |
 | Q / E | Strafe left / right |
-| Shift + W | Hard burn; increases fuel use and drive heat |
+| Shift + W | Hard burn; more fuel and heat |
 | X | Hold to brake with RCS |
-| F | Toggle attitude assist |
-| R | Recover nearby cargo or dock |
-| Space | Fire the cannon (multiplayer) |
-| P | Pause or resume |
-| M | Toggle the local system map |
-| V | Toggle cinematic view |
-| H | Open the flight manual |
-| Tab | Scoreboard (multiplayer) |
-| Mouse wheel / zoom buttons | Adjust camera zoom |
+| Space | Fire the active weapon group |
+| F | Interact (dock, recover, scan, rescue) |
+| R | Reload |
+| P | Pause / menu |
+| M | System map |
+| V | Cinematic view |
+| H | Flight manual |
+| G (hold) | Scoreboard |
+| Escape | Close one layer |
 
-The **Kill velocity** button maintains a braking burn until you stop. The **burn limiter** controls the maximum thrust commanded by W. Mobile devices get hold-to-burn, brake and rotation controls. Navigation markers point toward a selected target when it is outside the viewport.
+Controls are remappable in Settings → Controls, and released on blur, hidden tab, overlay and pointer
+cancel. Touch devices get a left drive pad, a turn strip, a right aim pad and fire buttons; essential
+targets are at least 44 px and nothing depends on hover.
 
-Collect each archive within **75 m** and below **12 m/s**. Dock at Wayfarer within **115 m** and below **8 m/s**. Docking repairs the hull and refills propellant. Deliver all three archives to finish the contract and record your best flight time locally.
+## Ships
 
-## Ships and environment
-
-- **Kestrel:** balanced independent corvette, 82 t dry mass.
-- **Mule:** heavier salvage tug with larger propellant reserves and stronger armor.
-- **Needle:** lighter reconnaissance cutter with higher acceleration and faster attitude control.
-
-Switch ships in the shipyard to begin a new sortie. Ships, engine bells, armor, radiators, point defense housings, maneuvering jets, station and containers are built as 3D geometry. Asteroids and the distant moon use procedurally baked color and bump textures. Fonts ship locally; the game makes no third-party asset requests at runtime. Optional synthesized cabin audio is enabled with the speaker control.
-
-## LAN multiplayer
-
-```sh
-bun run host      # builds, then serves the game and the match server on 0.0.0.0:8080
-```
-
-The host prints two addresses. Give other players the **LAN** one; they open it in a browser and land in the lobby. The host plays from `http://localhost:8080` like everyone else — hosting grants no advantage beyond the launch button.
-
-- Pick a callsign, a team (Blue fleet, Red fleet, or Pirates) and a hull. Pirates are hostile to both fleets; the two fleets are hostile to each other and friendly within themselves.
-- Loadout points are capped at **10** across hull, thrust, propellant and agility. The server sanitizes every loadout, so a tampered client is spent down to the budget rather than trusted.
-- The host picks the arena (Drift Belt, The Quarry, Open Expanse) and launches once pilots are ready. **Tab** shows the scoreboard; **End match** returns everyone to the lobby with a debrief.
-- Death is a five second respawn on your team's spawn point. The arena boundary pulls you back and tears the hull if you ignore it for too long.
-- Matchmaking, accounts and persistence do not exist. A match runs until the host ends it.
-
-Rocks are generated from the arena seed on every machine instead of being sent over the wire, so a match costs roughly 7 KB per snapshot. If a client and the host ever disagree about the field you will see invisible walls, which is why `tests/world.test.ts` guards that generation.
-
-Windows Firewall prompts on the first launch. Allow Bun on private networks, or the other PCs cannot reach port 8080.
-
-## Physics scope
-
-The ship moves in a two-dimensional local inertial frame. A fixed **120 Hz** simulation integrates thrust, current wet mass, angular acceleration, propellant consumption and collision response. There is no linear drag or arbitrary velocity cap. Releasing thrust preserves velocity; turning the ship does not steer existing momentum. Attitude assist uses fuel to arrest rotation. Braking applies opposing force and consumes propellant.
-
-This is a playable Newtonian salvage scenario inspired by hard science fiction. It does not model planetary orbital gravity, relativity, structural stresses, or weapon combat. The background moon and rocks behind the navigation plane are visual scenery. Planar asteroids use circular collision proxies, and ship models are enlarged for readability.
+Three chassis (`needle`, `kestrel`, `mule`) and 23 parts: seven weapon behaviours (ballistic,
+point-defence, rail, flak, torpedo, mine, beam), three drives, two reactors, three armour sets, two
+sensors and six utilities. Fits are validated atomically — power, mass, slots, budget, exclusive
+utilities — and a rejected build keeps the previous one. `deriveFit` in `src/shared/catalog.ts` is
+the single derivation used by the authority, the hangar and the HUD.
 
 ## Check and build
 
 ```sh
-bun test
-bun run build
-bun run preview
+bun test             # 337 tests: kernel rules, protocol, codec, physics, campaign, persistence, UI
+bun run build        # typecheck, then bundle
+bun run test:outcome # six viewports through the real app: screens, layout, keyboard, offline match
+bun run test:lan     # starts a host, claims operator, joins a guest, plays a live match
+bun run dev:server   # host only, for LAN development against the Vite client
 ```
 
-`bun test` checks the physical invariants, the shared world simulation, determinism, weapons, fractures and loadout validation.
-
-With the development server running, `bun run test:browser` checks actual WebGL rendering, keyboard thrust, coasting, rotation, braking, pause, map, assist, ship selection, zoom, cinematic mode and mobile input. `bun run test:mission` flies a whole sortie through ordinary keyboard events, recovers all three archives, docks and starts a fresh sortie. Both exercise the **single-player** path, so stop the host first: a client that finds a server on port 8080 joins the lobby instead.
-
-With the host running, `bun run test:mp` opens three browsers against it and checks the lobby, host election, team picking, the host-only arena picker, loadout round trips, launch, three interpolated ships, an identical rock field on every client, local prediction, bullets over the wire, latency, the scoreboard, the debrief, and that one client leaving does not disturb the match.
-
-The browser checks use the Chrome installation on this machine; adjust `executablePath` in `scripts/browser-check.mjs` and `scripts/mp-check.mjs` for another installation. Screenshots and results are written to `artifacts/`.
-
-WebGL 2 is required. Enable browser hardware acceleration for smooth flight. The game pauses when its tab is hidden and while a dialog is open. Reduced-motion settings disable ambient object rotation and soften camera behavior.
+`test:outcome` and `test:lan` drive Chrome through Playwright; override `CHROME_PATH` for another
+installation. Screenshots and JSON results land in `artifacts/`. `docs/EVIDENCE.md` records what has
+been verified on this machine, on which browsers, and what is still unverified.
 
 ## Source layout
 
-| File | Purpose |
+| Path | Purpose |
 | --- | --- |
-| `src/main.ts` | Flight HUD, input, mission, dialogs and main loop |
-| `src/physics.ts` | Deterministic physics and interaction boundaries |
-| `src/world.ts` | Shared multiplayer simulation, arenas and wire protocol |
-| `src/net.ts` | WebSocket client, snapshot interpolation, local prediction |
-| `src/lobby.ts` | Lobby dialog markup and handlers |
-| `server.ts` | Headless host: static files, lobby, 120 Hz world, 30 Hz snapshots |
-| `src/scene.ts` | Camera, lighting, rendering and navigation vectors |
-| `src/models.ts` | Ship, asteroid, cargo and station geometry |
-| `src/textures.ts` | Baked rocky surfaces and space backdrop |
-| `src/audio.ts` | Synthesized cabin sound |
-| `src/style.css` | Responsive flight deck and dialogs |
-| `DESIGN.md` | Design direction and visual rationale |
+| `src/shared/**` | Contract, validators, catalog derivation, protocol, codec, balance, ids, RNG |
+| `src/sim/**` | Authority kernel: world step, motion, physics, spatial hash, weapons, fracture, sensors, spawn, score, lobby, bots, campaign |
+| `src/server/**` | Room loop, baselines, operator claim, one-port server, SQLite persistence, QR |
+| `src/client/session/**` | `SessionPort` adapters: LAN sockets, offline worker, prediction, mock fixtures |
+| `src/ui/**` | Shell, router, screens, HUD, settings pages, styles and tokens |
+| `src/render/**` | Entity registry, LOD and detail queue, pools, camera, quality tiers, scene |
+| `src/input/**` | Bindings, intent router, touch layout and capture |
+| `src/audio/**` | Five-bus mixer, cue recipes, voice budgets |
+| `src/models.ts`, `src/textures.ts` | Procedural ship and asteroid geometry, baked surfaces |
+| `src/main.ts` | Composition root: settings, audio, input, scene and shell over one session |
+| `design/**` | Frozen design contract, catalog, prototype and evidence from the design pass |
 
-Stack references: [Bun with Vite](https://bun.sh/guides/ecosystem/vite), [Three.js orthographic camera](https://threejs.org/docs/pages/OrthographicCamera.html), [Three.js physically based standard material](https://threejs.org/docs/pages/MeshStandardMaterial.html).
+Stack references: [Bun WebSockets](https://bun.com/docs/runtime/http/websockets),
+[Bun SQLite](https://bun.com/docs/runtime/sqlite),
+[Three.js orthographic camera](https://threejs.org/docs/pages/OrthographicCamera.html).
