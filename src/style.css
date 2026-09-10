@@ -244,7 +244,7 @@ h1 > span { color: var(--amber); }
 .cinematic .mission-panel, .cinematic .vessel-panel, .cinematic .sector-label, .cinematic .ship-label, .cinematic .view-status, .cinematic .navigation-info, .cinematic .action-prompt, .cinematic .map-legend { visibility: hidden; }
 .cinematic .viewport-shade { opacity: .3; }
 
-dialog { padding: 0; width: min(640px, calc(100% - 32px)); max-height: calc(100svh - 48px); color: var(--text); background: #111e2b; border: 1px solid #405461; border-radius: 12px; box-shadow: 0 30px 150px #000a; }
+dialog { padding: 0; width: min(640px, calc(100% - 32px)); max-height: calc(100svh - 48px); overflow-y: auto; color: var(--text); background: #111e2b; border: 1px solid #405461; border-radius: 12px; box-shadow: 0 30px 150px #000a; }
 dialog::backdrop { background: #02070cc9; backdrop-filter: blur(7px); }
 .dialog-inner { padding: 41px; position: relative; }
 .dialog-close { position: absolute; top: 16px; right: 16px; }
@@ -488,7 +488,7 @@ dialog::backdrop { background: #02070cc9; backdrop-filter: blur(7px); }
   .map-legend > span { font-size: 9px; margin-bottom: 12px; }
   .map-legend > small { display: none; }
   #toast { top: 62px; font-size: 11px; width: calc(100% - 36px); max-width: 430px; padding: 10px 13px; }
-  dialog { max-height: calc(100svh - 24px); }
+  dialog { max-height: calc(100svh - 24px); overflow-y: auto; }
   .dialog-inner { padding: 32px 22px 24px; }
   #dialog-title { font-size: 32px; margin-top: 15px; max-width: 280px; }
   .dialog-description { font-size: 12px; }
@@ -526,4 +526,79 @@ dialog::backdrop { background: #02070cc9; backdrop-filter: blur(7px); }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+
+/* ---------- multiplayer match ---------- */
+
+.text-button { font-size: 11px; color: #a9bdc9; padding: 6px 9px; border: 1px solid #334856; border-radius: 4px; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.text-button:hover { background: #1c2c39; color: #e6eef2; }
+.text-button kbd { height: 16px; min-width: 16px; font-size: 9px; border-color: #415968; }
+.mp-panel { position: absolute; top: 32px; right: 250px; z-index: 3; display: flex; align-items: center; gap: 18px; padding: 9px 14px; background: #0e1a24d9; border: 1px solid #2c3f4c; border-radius: 6px; }
+.mp-panel > div { display: flex; flex-direction: column; gap: 3px; font-size: 9px; color: #7d94a3; }
+.mp-panel > div strong { font: 500 15px 'Barlow Condensed', sans-serif; color: #cfdce2; font-variant-numeric: tabular-nums; }
+.team-pill { display: inline-flex; align-items: center; font-size: 9px; font-weight: 600; letter-spacing: .4px; text-transform: uppercase; padding: 3px 7px; border-radius: 3px; border: 1px solid; white-space: nowrap; }
+.team-blue { color: #9fd0cc; border-color: #46706e; background: #1b343833; }
+.team-red { color: #e8a79c; border-color: #7c4b45; background: #3a222033; }
+.team-pirate { color: #e6c294; border-color: #77603f; background: #3a2f2033; }
+.scoreboard { position: absolute; top: 78px; left: 50%; transform: translateX(-50%); z-index: 5; width: min(460px, calc(100% - 40px)); padding: 16px 18px; background: #0d1a24ea; border: 1px solid #3a4f5d; border-radius: 8px; box-shadow: 0 14px 50px #0007; }
+.scoreboard-row { display: grid; grid-template-columns: 82px 1fr 34px 34px 46px; align-items: center; gap: 10px; font-size: 11px; color: #a9bdc9; padding: 7px 0; border-top: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+.scoreboard-row strong { font-weight: 500; color: #d3e0e6; }
+.scoreboard-row.is-you strong { color: var(--amber); }
+.debrief-table { margin: 24px 0; }
+.debrief-row { display: grid; grid-template-columns: 20px 82px 1fr auto auto; align-items: center; gap: 12px; padding: 10px 0; font-size: 12px; color: #a9bdc9; border-top: 1px solid #2e424f; }
+.debrief-row:last-child { border-bottom: 1px solid #2e424f; }
+.debrief-row strong { font-weight: 500; color: #dae6eb; }
+.debrief-row.is-you strong { color: var(--amber); }
+.mp-mode .mission-panel, .mp-mode [data-view="shipyard"], .mp-mode #change-ship, .mp-mode .navigation-info, .mp-mode .ship-drawing, .mp-mode .schematic-tag, .mp-mode .schematic-scale { display: none; }
+
+/* ---------- lobby ---------- */
+
+.lobby-address { display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: #16232e; border: 1px solid #34495a; border-radius: 6px; margin: 0 0 22px; flex-wrap: wrap; }
+.lobby-url { font: 500 20px 'Barlow Condensed', sans-serif; letter-spacing: .5px; color: #cbdfe4; }
+.lobby-address .secondary-button { width: auto; margin-left: auto; padding: 8px 14px; }
+.lobby-grid { display: grid; grid-template-columns: 236px 1fr; gap: 22px; }
+.lobby-pilot { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--line); font-size: 12px; color: #b6c8d0; }
+.lobby-pilot strong { font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
+.lobby-pilot.is-you strong { color: var(--amber); }
+.lobby-empty { font-size: 11px; color: #7d94a3; line-height: 1.7; }
+.lobby-tag { font-size: 9px; color: #7d94a3; border: 1px solid #35495a; border-radius: 3px; padding: 2px 5px; }
+.lobby-tag.ready { color: #9ed3c4; border-color: #47716a; }
+.lobby-name { display: flex; flex-direction: column; gap: 6px; font-size: 10px; color: #8296a3; margin-bottom: 16px; }
+.lobby-name input { background: #101c26; border: 1px solid #35495a; border-radius: 4px; padding: 9px 10px; color: #dce6e8; font-size: 12px; }
+.lobby-teams { display: flex; gap: 7px; margin-bottom: 16px; }
+.team-button { flex: 1; font-size: 10px; font-weight: 600; letter-spacing: .4px; text-transform: uppercase; padding: 8px 6px; border-radius: 4px; border: 1px solid #35495a; color: #90a4b1; }
+.team-button.selected { border-color: #7fa8a4; color: #d6e6e3; background: #1d3238; }
+.lobby-chassis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 16px; }
+.chassis-option { position: relative; border: 1px solid #33485a; border-radius: 5px; padding: 9px 10px; cursor: pointer; }
+.chassis-option.selected { border-color: #7fa8a4; background: #182c34; }
+.chassis-option input { position: absolute; opacity: 0; }
+.chassis-option span { display: block; font-size: 12px; font-weight: 500; color: #d3e0e6; }
+.chassis-option small { display: block; font-size: 9px; color: #7d94a3; margin-top: 3px; line-height: 1.4; }
+.lobby-points { display: grid; gap: 9px; margin-bottom: 14px; }
+.point-slider { display: grid; gap: 5px; font-size: 10px; color: #93a7b4; }
+.point-slider > span { display: flex; justify-content: space-between; }
+.point-slider b { color: #d3e0e6; font-weight: 500; }
+.point-slider input { appearance: none; -webkit-appearance: none; width: 100%; height: 4px; background: repeating-linear-gradient(90deg, #7f8f77 0, #7f8f77 6px, #101b26 6px, #101b26 9px); cursor: pointer; }
+.point-slider input::-webkit-slider-thumb { -webkit-appearance: none; width: 4px; height: 13px; background: #efbd87; border-radius: 1px; }
+.point-slider input::-moz-range-thumb { width: 4px; height: 13px; background: #efbd87; border: 0; border-radius: 1px; }
+.points-counter { font-size: 10px; color: #8296a3; }
+.points-counter b { color: var(--amber); font-weight: 600; }
+.lobby-colors { display: flex; gap: 7px; }
+.color-swatch { width: 26px; height: 26px; border-radius: 4px; border: 1px solid #3d5261; background: var(--swatch); }
+.color-swatch.selected { outline: 2px solid var(--amber); outline-offset: 2px; }
+.lobby-maps { grid-column: 1 / -1; }
+.lobby-map-list { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 10px; }
+.map-card { text-align: left; border: 1px solid #33485a; border-radius: 5px; padding: 12px; }
+.map-card.selected { border-color: #7fa8a4; background: #182c34; }
+.map-card strong { display: block; font-size: 12px; font-weight: 500; color: #d3e0e6; }
+.map-card small { display: block; font-size: 10px; color: #7d94a3; margin-top: 4px; }
+.lobby-actions { display: flex; gap: 12px; margin-top: 26px; }
+.lobby-actions button { flex: 1; }
+
+@media (max-width: 900px) {
+  .mp-panel { right: 20px; top: 24px; gap: 12px; padding: 7px 10px; }
+  .mp-panel > div { display: none; }
+  .lobby-grid { grid-template-columns: 1fr; }
+  .lobby-map-list { grid-template-columns: 1fr; }
+  .top-actions .text-button { font-size: 10px; padding: 5px 7px; }
 }

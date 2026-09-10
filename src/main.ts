@@ -9,8 +9,14 @@ import './style.css';
 import { icon } from './icons';
 import { SpaceScene } from './scene';
 import { FlightAudio } from './audio';
-import { canDock, canRecover, clamp, createCargo, createObstacles, createShip, distance, heading, length, resolveCollision, SHIPS, STATION, stepShip } from './physics';
-import type { ShipClass, Vec2 } from './physics';
+import { canDock, canRecover, clamp, createCargo, createObstacles, createShip, defaultLoadout, distance, heading, length, resolveCollision, SHIPS, specFor, STATION, stepShip } from './physics';
+import type { FlightInput, ShipClass, ShipState, Vec2 } from './physics';
+import { packInput, GUN, RESPAWN_DELAY, mapById } from './world';
+import type { LobbyPlayer, RenderView, Rock, S2C, ScoreRow, TeamId, WirePlayer, WorldEvent } from './world';
+import { Net } from './net';
+import { lobbyOpen, refreshLobby, showLobby } from './lobby';
+import type { LobbyEdit, LobbyModel } from './lobby';
+import type { SoloView } from './scene';
 
 const $ = <T extends HTMLElement = HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
 const shipDrawing = `<svg class="ship-drawing" viewBox="0 0 180 210" fill="none" aria-hidden="true"><g stroke="currentColor" stroke-width="1"><path d="m81 22-13 28v78l-10 28 8 25h15v-19h18v19h15l8-25-10-28V50L99 22Z"/><path d="M81 22h18v30H81zm-13 32h44M76 61h28v68H76zm6 8h16v20H82zm-6 26h28m-28 8h28m-28 8h28m-22 18v29m16-29v29M64 82H52v57h12m52-57h12v57h-12M52 98h12m-12 24h12m52-24h12m-12 24h12M70 146h9v26H66zm31 0h9l4 26h-13z"/><path d="M44 56v-9h9m74 0h9v9M44 157v9h9m74 0h9v-9" opacity=".5"/><path d="M87 7h6v14M40 104H16m124 0h24M90 184v16" stroke-dasharray="2 3"/></g><g fill="currentColor"><circle cx="52" cy="87" r="2"/><circle cx="128" cy="87" r="2"/><rect x="82" y="57" width="16" height="3" opacity=".7"/></g></svg>`;
@@ -20,7 +26,7 @@ $('#app').innerHTML = `
     <header class="topbar">
       <a class="brand" href="./" aria-label="DRIFT home"><svg class="brand-mark" viewBox="0 0 38 40" fill="none" aria-hidden="true"><path d="M5 32 18 4l7 17-9-5-4 16Z" fill="currentColor"/><path d="m21 32 8-18 7 18Z" fill="currentColor"/></svg><span>DRIFT</span><i></i><small>Belt operations</small></a>
       <nav class="main-nav" aria-label="Game views"><button class="nav-button active" data-view="flight" aria-label="Flight deck">${icon('flight')}<span>Flight deck</span></button><button class="nav-button" data-view="map" aria-label="System map">${icon('map')}<span>System map</span><kbd>M</kbd></button><button class="nav-button" data-view="shipyard" aria-label="Shipyard">${icon('ship')}<span>Shipyard</span></button></nav>
-      <div class="top-actions"><span class="connection"><i></i>Local simulation</span><button class="icon-button" id="sound-button" aria-label="Enable cabin audio" title="Cabin audio">${icon('mute')}</button><button class="icon-button" id="pause-button" aria-label="Pause simulation" title="Pause · Space">${icon('pause')}</button><button class="icon-button" id="help-button" aria-label="Open flight manual" title="Flight manual · H">${icon('help')}</button></div>
+      <div class="top-actions"><span class="connection"><i></i><span id="connection-label">Local simulation</span></span><button class="text-button" id="end-match" hidden>End match</button><button class="text-button" id="score-button" hidden>Scoreboard <kbd>Tab</kbd></button><button class="icon-button" id="sound-button" aria-label="Enable cabin audio" title="Cabin audio">${icon('mute')}</button><button class="icon-button" id="pause-button" aria-label="Pause simulation" title="Pause · P">${icon('pause')}</button><button class="icon-button" id="help-button" aria-label="Open flight manual" title="Flight manual · H">${icon('help')}</button></div>
     </header>
 
     <main class="flight-deck" aria-label="Flight deck">
@@ -54,6 +60,12 @@ $('#app').innerHTML = `
       </aside>
 
       <div id="world-labels" aria-label="Navigation targets"></div>
+      <div class="mp-panel" id="mp-panel" hidden>
+        <span class="team-pill team-blue" id="mp-team">Blue fleet</span>
+        <div><span>Kills</span><strong id="mp-kills">0</strong></div>
+        <div><span>Deaths</span><strong id="mp-deaths">0</strong></div>
+      </div>
+      <div class="scoreboard" id="scoreboard" hidden aria-label="Scoreboard"><span class="section-label">Scoreboard</span><div id="scoreboard-rows"></div></div>
       <div class="ship-label" id="player-label"><span class="label-rule"></span><div><strong id="player-name">Kestrel</strong><small id="player-mode">Coasting</small></div></div>
       <div class="map-legend" hidden><h2>Local system</h2><p>Nereid recovery zone</p><span><i class="legend-ship"></i>Your vessel</span><span><i class="legend-cargo"></i>Recoverable archive</span><span><i class="legend-station"></i>Wayfarer station</span><small>Choose a contact to set your navigation target.</small></div>
       <div class="navigation-info"><span class="bearing-line"></span><span id="target-summary">Flight recorder</span><strong id="target-range">291 m</strong><span id="target-speed">Target selected</span></div>
@@ -72,7 +84,7 @@ $('#app').innerHTML = `
         <div class="drive-instrument"><div class="instrument-heading"><span>Main drive</span><strong id="drive-state">Standby</strong></div><div class="drive-readout"><strong id="accel-value">0.00 <small>g</small></strong><span>Burn limiter <b id="limiter-value">100%</b></span></div><input id="throttle" type="range" min="10" max="100" value="100" aria-label="Main engine thrust limit"/><div class="range-labels"><span>0</span><span>50</span><span>100%</span></div></div>
         <div class="flight-buttons"><button id="assist-button" class="assist-button active" aria-pressed="true">${icon('target')}<span>Flight assist <strong>On</strong></span><kbd>F</kbd></button><button id="brake-button" class="brake-button" aria-pressed="false">${icon('reset')}<span>Kill velocity</span><kbd>X</kbd></button></div>
       </div>
-      <div class="controls-bar"><div class="keyboard-guide"><span><kbd>W</kbd><kbd>S</kbd> Thrust</span><span><kbd>A</kbd><kbd>D</kbd> Rotate</span><span><kbd>Q</kbd><kbd>E</kbd> Strafe</span><span><kbd>Shift</kbd> Hard burn</span><span><kbd>R</kbd> Interact</span></div><span class="physics-note"><i></i>Newtonian flight <span>/</span> No speed limit</span><button id="controls-help">Flight manual ${icon('help')}</button></div>
+      <div class="controls-bar"><div class="keyboard-guide"><span><kbd>W</kbd><kbd>S</kbd> Thrust</span><span><kbd>A</kbd><kbd>D</kbd> Rotate</span><span><kbd>Q</kbd><kbd>E</kbd> Strafe</span><span><kbd>Shift</kbd> Hard burn</span><span><kbd>Space</kbd> Fire</span><span><kbd>R</kbd> Interact</span><span><kbd>P</kbd> Pause</span></div><span class="physics-note"><i></i>Newtonian flight <span>/</span> No speed limit</span><button id="controls-help">Flight manual ${icon('help')}</button></div>
     </footer>
   </div>
   <dialog id="game-dialog" aria-labelledby="dialog-title"><div class="dialog-inner"><button class="dialog-close icon-button" aria-label="Close dialog">${icon('cross')}</button><div id="dialog-content"></div></div></dialog>
@@ -102,6 +114,229 @@ let hiddenPaused = false;
 let previewImages: Record<ShipClass, string> | undefined;
 const dialog = $<HTMLDialogElement>('#game-dialog');
 const markers = new Map<string, HTMLButtonElement>();
+
+/* ---------- multiplayer ---------- */
+
+const LOCAL = 'you';
+const CONNECT_TIMEOUT = 1500;
+let mode: 'solo' | 'mp' = 'solo';
+let net: Net | undefined;
+let mpTeam: TeamId = 'blue';
+let scoreboardOpen = false;
+let lastAck = -1;
+let pingAt = 0;
+let lastInputSent = 0;
+let lastMuzzle = 0;
+let inputSeq = 0;
+let respawnUntil = 0;
+let matchStarted = false;
+let predictAccumulator = 0;
+let lobbySignature = '';
+let scoreboardSignature = '';
+const pendingInputs: { seq: number; input: FlightInput & { fire: boolean } }[] = [];
+let predicted: ShipState | undefined;
+let replay: ShipState | undefined;
+const lobbyLocal = { name: 'Pilot', team: 'blue' as TeamId, loadout: defaultLoadout('kestrel'), ready: false };
+const lobbyInfo: { players: LobbyPlayer[]; mapId: string } = { players: [], mapId: 'belt' };
+const soloWire: WirePlayer = { id: LOCAL, x: 0, y: 0, vx: 0, vy: 0, a: 0, av: 0, hp: 100, fu: 16000, ht: 0, th: 0, ac: 0, rcs: 0, dead: 0, k: 0, d: 0, ack: 0 };
+const soloView: RenderView = { players: [soloWire], bullets: [] };
+const soloExtras: SoloView = { cargos, target: undefined };
+const currentInput: FlightInput & { fire: boolean } = { thrust: 0, turn: 0, strafe: 0, brake: false, boost: false, fire: false };
+
+/** Read the keyboard straight into one reused object: input is level-triggered, not an event stream. */
+function readInput() {
+  currentInput.thrust = (keys.has('KeyW') || keys.has('ArrowUp') ? burnLimit : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 0.28 : 0);
+  currentInput.turn = (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0) - (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0);
+  currentInput.strafe = (keys.has('KeyE') ? 1 : 0) - (keys.has('KeyQ') ? 1 : 0);
+  currentInput.brake = keys.has('KeyX') || brakeLatched;
+  currentInput.boost = keys.has('ShiftLeft') || keys.has('ShiftRight');
+  currentInput.fire = keys.has('Space');
+  return currentInput;
+}
+
+/** Mirror the wire player into the ShipState the instruments read, so the HUD has one code path. */
+function applyWire(ship: ShipState, w: WirePlayer, loadout?: LobbyPlayer['loadout']) {
+  ship.position.x = w.x; ship.position.y = w.y;
+  ship.velocity.x = w.vx; ship.velocity.y = w.vy;
+  ship.angle = w.a; ship.angularVelocity = w.av;
+  ship.hull = w.hp; ship.fuel = w.fu; ship.heat = w.ht;
+  ship.thrustLevel = w.th; ship.acceleration = w.ac; ship.rcsActive = w.rcs === 1;
+  if (loadout) { ship.shipClass = loadout.chassis; ship.spec = specFor(loadout); }
+}
+
+function lobbyModel(): LobbyModel {
+  return {
+    you: net?.you ?? '', isHost: !!net?.isHost, hostUrl: net?.hostUrl || location.origin,
+    mapId: lobbyInfo.mapId, players: lobbyInfo.players, local: lobbyLocal,
+  };
+}
+
+function sendLobbyEdit(edit: LobbyEdit) {
+  if (edit.name !== undefined) lobbyLocal.name = edit.name.trim().slice(0, 16) || 'Pilot';
+  if (edit.team) lobbyLocal.team = edit.team;
+  if (edit.loadout) lobbyLocal.loadout = edit.loadout;
+  if (edit.ready !== undefined) lobbyLocal.ready = edit.ready;
+  net?.sendLobby(lobbyLocal.team, lobbyLocal.loadout, lobbyLocal.ready);
+  if (edit.mapId) net?.chooseMap(edit.mapId);
+  refreshLobby(lobbyModel(), lobbyDeps);
+}
+
+const lobbyDeps = { open: openDialog, onChange: sendLobbyEdit, onStart: () => net?.start() };
+
+function onLobbyMessage(msg: Extract<S2C, { t: 'lobby' }>) {
+  lobbyInfo.players = msg.players; lobbyInfo.mapId = msg.mapId;
+  const me = msg.players.find(p => p.id === net?.you);
+  if (me) { lobbyLocal.team = me.team; lobbyLocal.loadout = me.loadout; lobbyLocal.ready = me.ready; lobbyLocal.name = me.name; }
+  const signature = JSON.stringify(msg.players) + msg.mapId;
+  if (signature === lobbySignature) return;
+  lobbySignature = signature;
+  if (lobbyOpen()) refreshLobby(lobbyModel(), lobbyDeps);
+}
+
+function onBeginMessage(msg: Extract<S2C, { t: 'begin' }>) {
+  mode = 'mp';
+  matchStarted = true;
+  scene.removeShip(LOCAL);
+  $('.game-shell').classList.add('mp-mode');
+  $<HTMLElement>('#mp-panel').hidden = false;
+  $('#end-match').hidden = !net?.isHost;
+  $('#score-button').hidden = false;
+  $('#connection-label').textContent = 'LAN match';
+  for (const meta of msg.players) {
+    scene.addShip(meta.id, meta.loadout);
+    if (meta.id === net?.you) { lobbyLocal.loadout = meta.loadout; mpTeam = meta.team; updateTeamPill(); scene.setLocalTeam(mpTeam); }
+  }
+  scene.setRocks(net!.rocks.values());
+  // The salvage overlay belongs to the single-player sortie; clear its markers for the match.
+  $('#contact-list').innerHTML = '';
+  $('#world-labels').innerHTML = '';
+  markers.clear();
+  predicted = createShip(lobbyLocal.loadout.chassis, lobbyLocal.loadout);
+  replay = createShip(lobbyLocal.loadout.chassis, lobbyLocal.loadout);
+  pendingInputs.length = 0; lastAck = -1; elapsed = 0;
+  setPaused(false);
+  $('#ship-name').textContent = SHIPS[lobbyLocal.loadout.chassis].name;
+  $('#player-name').textContent = lobbyLocal.name;
+  $('#ship-role').textContent = SHIPS[lobbyLocal.loadout.chassis].role;
+  if (dialog.open) closeDialog();
+  scene.snapCamera();
+}
+
+function updateTeamPill() {
+  const pill = $('#mp-team');
+  pill.className = `team-pill team-${mpTeam}`;
+  pill.textContent = mpTeam === 'blue' ? 'Blue fleet' : mpTeam === 'red' ? 'Red fleet' : 'Pirates';
+}
+
+function onWorldEvents(events: WorldEvent[]) {
+  for (const event of events) {
+    if (event.e === 'rockSplit') {
+      const at = scene.removeRock(event.id);
+      scene.queueRocks(event.children);
+      scene.burst(at?.x ?? event.children[0].x, at?.y ?? event.children[0].y, 14, '#cbbd9a', 40);
+    } else if (event.e === 'rockGone') {
+      const at = scene.removeRock(event.id);
+      if (at) scene.burst(at.x, at.y, 10, '#cbbd9a', 32);
+    } else if (event.e === 'join') {
+      scene.addShip(event.player.id, event.player.loadout);
+    } else if (event.e === 'leave') {
+      scene.removeShip(event.id);
+    } else if (event.e === 'hit') {
+      scene.burst(event.x, event.y, event.dmg > 12 ? 12 : 7, '#ffd9a0', 60);
+    } else if (event.e === 'kill') {
+      if (event.victim === net?.you) {
+        respawnUntil = performance.now() + RESPAWN_DELAY * 1000;
+        toast(event.killer ? `Shot down by ${net?.playerMeta(event.killer)?.name ?? 'a hostile'}. Respawning in ${RESPAWN_DELAY} s.` : `Destroyed by the belt. Respawning in ${RESPAWN_DELAY} s.`);
+      } else if (event.killer === net?.you) toast('Target destroyed.');
+    } else if (event.e === 'spawn') {
+      if (event.id === net?.you) {
+        pendingInputs.length = 0; lastAck = -1;
+        if (predicted) { predicted.position.x = event.x; predicted.position.y = event.y; predicted.velocity.x = 0; predicted.velocity.y = 0; }
+        scene.snapCamera();
+      }
+    }
+  }
+}
+
+function showDebrief(rows: ScoreRow[]) {
+  const ordered = [...rows].sort((a, b) => b.kills - a.kills || a.deaths - b.deaths);
+  openDialog(`<span class="dialog-kicker">Match complete</span><div class="success-icon">${icon('check')}</div><h2 id="dialog-title">Debrief</h2><p class="dialog-description">The host ended the match. Here is the tally.</p>
+    <div class="debrief-table">${ordered.map((row, index) => `<div class="debrief-row${row.id === net?.you ? ' is-you' : ''}"><span>${index + 1}</span><span class="team-pill team-${row.team}">${row.team}</span><strong>${row.name}</strong><span>${row.kills} kills</span><span>${row.deaths} deaths</span></div>`).join('')}</div>
+    <button class="primary-button" id="debrief-close">Back to the lobby ${icon('arrow')}</button>`);
+  $('#debrief-close').addEventListener('click', () => { closeDialog(); if (net) showLobby(lobbyModel(), lobbyDeps); });
+}
+
+function toggleScoreboard(value = !scoreboardOpen) {
+  scoreboardOpen = value;
+  $<HTMLElement>('#scoreboard').hidden = !scoreboardOpen;
+  if (!scoreboardOpen) return;
+  const rows = net ? [...net.view(performance.now()).players].sort((a, b) => b.k - a.k || a.d - b.d) : [];
+  const signature = rows.map(p => `${p.id}:${p.k}:${p.d}:${p.dead}:${Math.ceil(p.hp)}`).join('|');
+  if (signature === scoreboardSignature) return;
+  scoreboardSignature = signature;
+  $('#scoreboard-rows').innerHTML = rows.map(p => {
+    const meta = net?.playerMeta(p.id);
+    const name = meta?.name ?? 'Pilot';
+    return `<div class="scoreboard-row${p.id === net?.you ? ' is-you' : ''}"><span class="team-pill team-${meta?.team ?? 'blue'}">${meta?.team ?? ''}</span><strong>${name}</strong><span>${p.k}</span><span>${p.d}</span><span>${p.dead ? 'down' : `${Math.ceil(p.hp)}%`}</span></div>`;
+  }).join('');
+}
+
+function updateMpHud(now: number) {
+  const self = net?.localPlayer();
+  if (!self || !net) return;
+  $('#mp-kills').textContent = String(self.k);
+  $('#mp-deaths').textContent = String(self.d);
+  if (now - pingAt > 1000) { pingAt = now; net.ping(); }
+  $('#connection-label').textContent = `LAN match · ${net.latency} ms`;
+  const outside = Math.hypot(self.x, self.y) > mapById(net.mapId).radius;
+  const countdown = Math.max(0, Math.ceil((respawnUntil - now) / 1000));
+  $('#flight-tip').textContent = self.dead === 1
+    ? `Hull destroyed. Respawn in ${countdown} s.`
+    : outside ? 'Leaving the arena. Turn back or the boundary will tear the hull apart.'
+      : self.hp < 30 ? 'Hull critical. Break off and let the repair drones work.'
+        : 'Incoming fire hurts. Keep your velocity in mind.';
+  if (scoreboardOpen && now - lastHUD > 85) toggleScoreboard(true);
+}
+
+/** Phase 7 prediction: transform only. Damage, fuel and heat stay authoritative. */
+function predictLocal(now: number, delta: number) {
+  if (!net || !predicted || !replay) return;
+  const self = net.localPlayer();
+  if (!self) return;
+  const input = currentInput;
+  if (now - lastInputSent > 1000 / 60) {
+    lastInputSent = now;
+    net.sendInput(packInput(input));
+    pendingInputs.push({ seq: ++inputSeq, input: { ...input } });
+  }
+  if (self.ack !== lastAck) {
+    lastAck = self.ack;
+    while (pendingInputs.length && pendingInputs[0].seq <= self.ack) pendingInputs.shift();
+    applyWire(replay, self, lobbyLocal.loadout);
+    for (const entry of pendingInputs) stepShip(replay, entry.input, 1 / 120);
+    const error = Math.hypot(replay.position.x - predicted.position.x, replay.position.y - predicted.position.y);
+    if (error > 25) {
+      predicted.position.x = replay.position.x; predicted.position.y = replay.position.y;
+      predicted.velocity.x = replay.velocity.x; predicted.velocity.y = replay.velocity.y;
+      predicted.angle = replay.angle; predicted.angularVelocity = replay.angularVelocity;
+      predictAccumulator = 0;
+    } else {
+      predicted.position.x += (replay.position.x - predicted.position.x) * 0.1;
+      predicted.position.y += (replay.position.y - predicted.position.y) * 0.1;
+    }
+  }
+  predicted.fuel = self.fu; predicted.hull = self.hp; predicted.heat = self.ht;
+  predicted.spec = specFor(lobbyLocal.loadout);
+  predicted.assist = state.assist;
+  // Same fixed step as the server, so prediction and authority stay phase-locked.
+  predictAccumulator = Math.min(predictAccumulator + delta, 0.25);
+  while (predictAccumulator >= 1 / 120) { stepShip(predicted, input, 1 / 120); predictAccumulator -= 1 / 120; }
+  // Only the transform is predicted; hp, fuel and heat below stay as the server reported them.
+  self.x = predicted.position.x; self.y = predicted.position.y;
+  self.vx = predicted.velocity.x; self.vy = predicted.velocity.y;
+  self.a = predicted.angle; self.av = predicted.angularVelocity;
+}
+
 
 function toast(message: string) {
   $('#toast').textContent = message;
@@ -138,9 +373,10 @@ function trackNearest() {
 function setPaused(value: boolean) {
   paused = value; keys.clear();
   $<HTMLElement>('.paused-indicator').hidden = !paused || modalOpen;
+  $('.paused-indicator > span').textContent = mode === 'mp' ? 'Controls paused' : 'Simulation paused';
   $('#pause-button').innerHTML = icon(paused ? 'play' : 'pause');
   $('#pause-button').setAttribute('aria-label', paused ? 'Resume simulation' : 'Pause simulation');
-  $('#view-label').textContent = paused ? 'Simulation paused' : scene.tactical ? 'Tactical navigation' : 'Flight in progress';
+  $('#view-label').textContent = paused ? (mode === 'mp' ? 'Controls paused' : 'Simulation paused') : scene.tactical ? 'Tactical navigation' : 'Flight in progress';
   $('.view-status').classList.toggle('is-paused', paused);
 }
 
@@ -167,16 +403,17 @@ function openDialog(content: string, wide = false) {
   dialog.showModal();
 }
 function closeDialog() { dialog.close(); }
-dialog.addEventListener('close', () => { modalOpen = false; keys.clear(); $('.paused-indicator').hidden = !paused; lastFrame = performance.now(); });
+dialog.addEventListener('close', () => { if (dialog.open) return; modalOpen = false; keys.clear(); $('.paused-indicator').hidden = !paused; lastFrame = performance.now(); });
 $('.dialog-close').addEventListener('click', closeDialog);
 dialog.addEventListener('click', event => { if (event.target === dialog) closeDialog(); });
 
 function showHelp() {
-  openDialog(`<span class="dialog-kicker">Kestrel flight school</span><h2 id="dialog-title">Space doesn’t have brakes.</h2><p class="dialog-description">Your engines change your velocity. Your thrusters change your heading. Learn to use them independently, and the belt is yours.</p><div class="manual-feature"><span class="manual-orbit">${icon('flight')}</span><div><strong>Burn. Coast. Counterburn.</strong><p>Point at your target and hold W to accelerate. Release W to coast. Hold X to fire braking thrusters before you arrive. Rotating alone won’t change where you’re going.</p></div></div><div class="manual-grid"><div><kbd>W</kbd><kbd>S</kbd><span>Main / reverse thrust</span></div><div><kbd>A</kbd><kbd>D</kbd><span>Rotate left / right</span></div><div><kbd>Q</kbd><kbd>E</kbd><span>Translate left / right</span></div><div><kbd>Shift</kbd><span>Hard burn (hold with W)</span></div><div><kbd>X</kbd><span>Hold to brake</span></div><div><kbd>F</kbd><span>Toggle attitude assist</span></div><div><kbd>R</kbd><span>Recover cargo / dock</span></div><div><kbd>Space</kbd><span>Pause simulation</span></div><div><kbd>M</kbd><span>Local system map</span></div><div><kbd>V</kbd><span>Cinematic view</span></div></div><div class="manual-mission"><strong>Your first contract</strong><p>Find the three amber archive markers. Get within 75 m, slow below 12 m/s, and press R to recover. Bring all three to Wayfarer station and dock within 115 m at less than 8 m/s. Collisions damage your hull.</p></div><button class="primary-button" id="manual-close">Take the controls ${icon('flight')}</button>`);
+  openDialog(`<span class="dialog-kicker">Kestrel flight school</span><h2 id="dialog-title">Space doesn’t have brakes.</h2><p class="dialog-description">Your engines change your velocity. Your thrusters change your heading. Learn to use them independently, and the belt is yours.</p><div class="manual-feature"><span class="manual-orbit">${icon('flight')}</span><div><strong>Burn. Coast. Counterburn.</strong><p>Point at your target and hold W to accelerate. Release W to coast. Hold X to fire braking thrusters before you arrive. Rotating alone won’t change where you’re going.</p></div></div><div class="manual-grid"><div><kbd>W</kbd><kbd>S</kbd><span>Main / reverse thrust</span></div><div><kbd>A</kbd><kbd>D</kbd><span>Rotate left / right</span></div><div><kbd>Q</kbd><kbd>E</kbd><span>Translate left / right</span></div><div><kbd>Shift</kbd><span>Hard burn (hold with W)</span></div><div><kbd>X</kbd><span>Hold to brake</span></div><div><kbd>F</kbd><span>Toggle attitude assist</span></div><div><kbd>R</kbd><span>Recover cargo / dock</span></div><div><kbd>Space</kbd><span>Fire cannon (multiplayer)</span></div><div><kbd>P</kbd><span>Pause simulation</span></div><div><kbd>M</kbd><span>Local system map</span></div><div><kbd>V</kbd><span>Cinematic view</span></div><div><kbd>Tab</kbd><span>Scoreboard (multiplayer)</span></div></div><div class="manual-mission"><strong>Your first contract</strong><p>Find the three amber archive markers. Get within 75 m, slow below 12 m/s, and press R to recover. Bring all three to Wayfarer station and dock within 115 m at less than 8 m/s. Collisions damage your hull.</p></div><button class="primary-button" id="manual-close">Take the controls ${icon('flight')}</button>`);
   $('#manual-close').addEventListener('click', closeDialog);
 }
 
 async function showShipyard() {
+  if (mode === 'mp') { toast('Hulls are chosen in the lobby before launch.'); return; }
   openDialog(`<span class="dialog-kicker">Independent fleet</span><h2 id="dialog-title">Find your kind of trouble.</h2><p class="dialog-description">Three ships. Three ways through the belt. Switching vessels starts a fresh sortie.</p><div class="shipyard-grid">${(Object.keys(SHIPS) as ShipClass[]).map(type => {
     const ship = SHIPS[type];
     return `<article class="ship-card ${state.shipClass === type ? 'current-ship' : ''}"><div class="ship-card-top"><span>${type === 'kestrel' ? 'All-rounder' : type === 'mule' ? 'Endurance' : 'Agility'}</span>${state.shipClass === type ? '<span class="current-tag">Current vessel</span>' : ''}</div><div class="ship-preview" data-preview="${type}"></div><h3>${ship.name}</h3><p>${ship.role}</p><dl><div><dt>Dry mass</dt><dd>${ship.mass / 1000} t</dd></div><div><dt>Max acceleration</dt><dd>${(ship.thrust / (ship.mass + ship.fuel) / 9.81).toFixed(2)} g</dd></div><div><dt>Propellant</dt><dd>${ship.fuel / 1000} t</dd></div></dl><button class="${state.shipClass === type ? 'secondary-button' : 'primary-button'}" data-ship="${type}">${state.shipClass === type ? 'Restart with Kestrel'.replace('Kestrel', ship.name) : `Command ${ship.name}`}${icon('arrow')}</button></article>`;
@@ -215,6 +452,7 @@ function updateMission() {
 }
 
 function interact() {
+  if (mode === 'mp') { toast('No salvage contracts in a match. Fight, or fly home.'); return; }
   if (paused || modalOpen || crashed) return;
   const recoverable = cargos.filter(c => canRecover(state, c)).sort((a, b) => distance(state.position, a.position) - distance(state.position, b.position))[0];
   if (recoverable) {
@@ -228,7 +466,7 @@ function interact() {
   }
   if (canDock(state)) {
     state.velocity = { x: 0, y: 0 }; state.angularVelocity = 0;
-    state.fuel = SHIPS[state.shipClass].fuel; state.hull = SHIPS[state.shipClass].hull; state.heat = 0;
+    state.fuel = state.spec.fuel; state.hull = state.spec.hull; state.heat = 0;
     sound.ping();
     if (recoveredCount === 3 && !missionComplete) {
       missionComplete = true; updateMission();
@@ -254,7 +492,7 @@ function toggleAssist() { state.assist = !state.assist; updateAssist(); toast(st
 
 function updateHUD(now: number) {
   const speed = length(state.velocity);
-  const spec = SHIPS[state.shipClass];
+  const spec = state.spec;
   const hull = state.hull / spec.hull * 100, fuel = state.fuel / spec.fuel * 100, heat = state.heat * 100;
   $('#velocity-value').textContent = speed.toFixed(1); $('#motion-state').textContent = speed < 0.1 ? 'At rest' : state.acceleration > 0.1 ? 'Under thrust' : 'Coasting';
   $('#velocity-fill').style.width = `${Math.min(100, speed / 200 * 100)}%`;
@@ -271,22 +509,26 @@ function updateHUD(now: number) {
   $('#mass-value').innerHTML = `${((spec.mass + state.fuel) / 1000).toFixed(1)} <small>t</small>`;
   $('#session-time').textContent = `T+ ${String(Math.floor(elapsed / 60)).padStart(2, '0')}:${String(Math.floor(elapsed % 60)).padStart(2, '0')}`;
   $('#player-mode').textContent = speed < 0.1 ? 'Holding position' : state.thrustLevel > 0 ? 'Main drive active' : state.rcsActive ? 'Maneuvering' : 'Ballistic coast';
-  const target = getTarget();
-  $('#target-summary').textContent = targetName();
-  $('#target-range').textContent = target ? formatDistance(distance(state.position, target)) : '—';
-  const maxBrake = spec.thrust / (spec.mass + state.fuel) * 0.65;
-  const stoppingDistance = speed * speed / (2 * maxBrake);
-  const tooFast = !!target && stoppingDistance > distance(state.position, target) - 40 && speed > 12;
-  $('#target-speed').textContent = tooFast ? 'Brake for approach' : speed > 0.5 ? `Stopping distance ${formatDistance(stoppingDistance)}` : 'Target selected';
-  $('.navigation-info').classList.toggle('approach-warning', tooFast);
-  for (const cargo of cargos) { const el = document.querySelector(`[data-range="${cargo.id}"]`); if (el) el.textContent = formatDistance(distance(state.position, cargo.position)); }
-  $('[data-range="station"]').textContent = formatDistance(distance(state.position, STATION));
-  const recoverable = cargos.some(c => canRecover(state, c));
-  const dockable = canDock(state);
-  const interactButton = $<HTMLButtonElement>('#interact-button');
-  interactButton.hidden = !(recoverable || dockable);
-  interactButton.innerHTML = `${recoverable ? 'Recover archive' : 'Dock at Wayfarer'} <kbd>R</kbd>`;
-  $('#flight-tip').textContent = state.fuel <= 0 ? 'Propellant exhausted. Open the flight manual to restart your sortie.' : tooFast ? 'Start your counterburn. Hold X to reduce velocity.' : recoverable ? 'Archive within reach. Ready for recovery.' : dockable ? 'Docking corridor clear. Welcome to Wayfarer.' : speed < 0.5 ? 'In space, letting go doesn’t slow you down.' : 'Your velocity vector shows where you’re actually going.';
+  if (mode === 'solo') {
+    const target = getTarget();
+    $('#target-summary').textContent = targetName();
+    $('#target-range').textContent = target ? formatDistance(distance(state.position, target)) : '—';
+    const maxBrake = spec.thrust / (spec.mass + state.fuel) * 0.65;
+    const stoppingDistance = speed * speed / (2 * maxBrake);
+    const tooFast = !!target && stoppingDistance > distance(state.position, target) - 40 && speed > 12;
+    $('#target-speed').textContent = tooFast ? 'Brake for approach' : speed > 0.5 ? `Stopping distance ${formatDistance(stoppingDistance)}` : 'Target selected';
+    $('.navigation-info').classList.toggle('approach-warning', tooFast);
+    for (const cargo of cargos) { const el = document.querySelector(`[data-range="${cargo.id}"]`); if (el) el.textContent = formatDistance(distance(state.position, cargo.position)); }
+    $('[data-range="station"]').textContent = formatDistance(distance(state.position, STATION));
+    const recoverable = cargos.some(c => canRecover(state, c));
+    const dockable = canDock(state);
+    const interactButton = $<HTMLButtonElement>('#interact-button');
+    interactButton.hidden = !(recoverable || dockable);
+    interactButton.innerHTML = `${recoverable ? 'Recover archive' : 'Dock at Wayfarer'} <kbd>R</kbd>`;
+    $('#flight-tip').textContent = state.fuel <= 0 ? 'Propellant exhausted. Open the flight manual to restart your sortie.' : tooFast ? 'Start your counterburn. Hold X to reduce velocity.' : recoverable ? 'Archive within reach. Ready for recovery.' : dockable ? 'Docking corridor clear. Welcome to Wayfarer.' : speed < 0.5 ? 'In space, letting go doesn’t slow you down.' : 'Your velocity vector shows where you’re actually going.';
+  } else {
+    $<HTMLButtonElement>('#interact-button').hidden = true;
+  }
   if (brakeLatched && speed < 0.04) brakeLatched = false;
   $('#brake-button').classList.toggle('active', brakeLatched || keys.has('KeyX'));
   $('#brake-button').setAttribute('aria-pressed', String(brakeLatched));
@@ -319,23 +561,16 @@ function updateLabels() {
   $('#player-label').style.transform = `translate(${point.x + (scene.tactical ? 22 : 57)}px, ${point.y + (scene.tactical ? 13 : 41)}px)`;
 }
 
-function frame(now: number) {
-  requestAnimationFrame(frame);
-  const delta = Math.min((now - lastFrame) / 1000, 0.25); lastFrame = now;
-  const stopped = paused || modalOpen || hiddenPaused || crashed;
+function soloFrame(delta: number, stopped: boolean) {
   if (!stopped) {
     accumulator += delta;
-    const input = {
-      thrust: (keys.has('KeyW') || keys.has('ArrowUp') ? burnLimit : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 0.28 : 0),
-      turn: (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0) - (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0),
-      strafe: (keys.has('KeyE') ? 1 : 0) - (keys.has('KeyQ') ? 1 : 0),
-      brake: keys.has('KeyX') || brakeLatched, boost: keys.has('ShiftLeft') || keys.has('ShiftRight'),
-    };
+    const input = readInput();
     while (accumulator >= 1 / 120) {
       stepShip(state, input, 1 / 120); elapsed += 1 / 120;
       for (const rock of obstacles) {
+        if (rock.vx || rock.vy) { rock.x += rock.vx / 120; rock.y += rock.vy / 120; }
         const damage = resolveCollision(state, rock);
-        if (damage > 2 && elapsed - lastCollisionNotice > 2) { toast(`Impact detected. Hull integrity ${Math.ceil(state.hull / SHIPS[state.shipClass].hull * 100)}%.`); lastCollisionNotice = elapsed; }
+        if (damage > 2 && elapsed - lastCollisionNotice > 2) { toast(`Impact detected. Hull integrity ${Math.ceil(state.hull / state.spec.hull * 100)}%.`); lastCollisionNotice = elapsed; }
       }
       accumulator -= 1 / 120;
     }
@@ -345,9 +580,46 @@ function frame(now: number) {
       $('#restart-button').addEventListener('click', () => { resetSortie(); closeDialog(); });
     }
   } else accumulator = 0;
-  scene.render(state, cargos, getTarget(), stopped ? 0 : delta, elapsed);
+  soloWire.x = state.position.x; soloWire.y = state.position.y;
+  soloWire.vx = state.velocity.x; soloWire.vy = state.velocity.y;
+  soloWire.a = state.angle; soloWire.av = state.angularVelocity;
+  soloWire.hp = state.hull; soloWire.fu = state.fuel; soloWire.ht = state.heat;
+  soloWire.th = state.thrustLevel; soloWire.ac = state.acceleration; soloWire.rcs = state.rcsActive ? 1 : 0;
+  scene.syncRockPositions(obstacles);
+  soloExtras.target = getTarget();
+  scene.render(soloView, LOCAL, stopped ? 0 : delta, elapsed, soloExtras);
+}
+
+function mpFrame(now: number, delta: number, stopped: boolean) {
+  if (!net) return;
+  const view = net.view(now);
+  if (!stopped) {
+    readInput();
+    predictLocal(now, delta);
+    net.integrateRocks(delta);
+    muzzleFlash(now);
+  }
+  const self = net.localPlayer();
+  if (self) applyWire(state, self);
+  elapsed = net.worldTime;
+  scene.render(view, net.you || LOCAL, stopped ? 0 : delta, elapsed);
+}
+
+/** Local muzzle flash, paced to the server's cooldown so it lines up with real shots. */
+function muzzleFlash(now: number) {
+  if (!currentInput.fire || state.hull <= 0 || now - lastMuzzle < GUN.cooldown * 1000) return;
+  lastMuzzle = now;
+  const fx = -Math.sin(state.angle), fy = Math.cos(state.angle);
+  scene.burst(state.position.x + fx * GUN.offset, state.position.y + fy * GUN.offset, 5, '#ffe6b8', 90);
+}
+
+function frame(now: number) {
+  requestAnimationFrame(frame);
+  const delta = Math.min((now - lastFrame) / 1000, 0.25); lastFrame = now;
+  const stopped = paused || modalOpen || hiddenPaused || crashed;
+  if (mode === 'solo' || !matchStarted) soloFrame(delta, stopped); else mpFrame(now, delta, stopped);
   updateLabels();
-  if (now - lastHUD > 85) updateHUD(now);
+  if (now - lastHUD > 85) { updateHUD(now); if (mode === 'mp') updateMpHud(now); }
   sound.update(Math.abs(state.thrustLevel), stopped);
 }
 
@@ -368,16 +640,19 @@ function changeZoom(delta: number) { scene.setZoom(delta); $('#zoom-value').text
 $('#zoom-in').addEventListener('click', () => changeZoom(0.15)); $('#zoom-out').addEventListener('click', () => changeZoom(-0.15));
 $('#space-canvas').addEventListener('wheel', event => { event.preventDefault(); changeZoom(event.deltaY > 0 ? -0.06 : 0.06); }, { passive: false });
 $('#throttle').addEventListener('input', event => { const value = Number((event.target as HTMLInputElement).value); burnLimit = value / 100; $('#limiter-value').textContent = `${value}%`; });
+$('#score-button').addEventListener('click', () => toggleScoreboard());
+$('#end-match').addEventListener('click', () => { toggleScoreboard(false); net?.end(); });
 
 const flightKeys = ['KeyW', 'KeyS', 'KeyA', 'KeyD', 'KeyQ', 'KeyE', 'KeyX', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ShiftLeft', 'ShiftRight'];
 window.addEventListener('keydown', event => {
   if (!scene || modalOpen || event.target instanceof HTMLInputElement || event.ctrlKey || event.metaKey || event.altKey) return;
   // Let focused controls retain their native Space/Enter activation.
   if (event.target instanceof HTMLButtonElement && (event.code === 'Space' || event.code === 'Enter')) return;
-  if (flightKeys.includes(event.code) || ['Space', 'KeyF', 'KeyR', 'KeyM', 'KeyV', 'KeyH'].includes(event.code)) event.preventDefault();
-  if (flightKeys.includes(event.code) && !paused) keys.add(event.code);
+  if (event.code === 'Tab' && mode === 'mp') { event.preventDefault(); toggleScoreboard(); return; }
+  if (flightKeys.includes(event.code) || ['Space', 'KeyP', 'KeyF', 'KeyR', 'KeyM', 'KeyV', 'KeyH'].includes(event.code)) event.preventDefault();
+  if ((flightKeys.includes(event.code) || event.code === 'Space') && !paused) keys.add(event.code);
   if (event.repeat) return;
-  if (event.code === 'Space') setPaused(!paused);
+  if (event.code === 'KeyP') setPaused(!paused);
   if (event.code === 'KeyF') toggleAssist();
   if (event.code === 'KeyR') interact();
   if (event.code === 'KeyM') setView(!scene.tactical);
@@ -392,17 +667,71 @@ document.querySelectorAll<HTMLButtonElement>('[data-key]').forEach(button => {
   for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) button.addEventListener(type, () => { keys.delete(button.dataset.key!); button.classList.remove('pressed'); });
 });
 
+/** Try the host, fall back to the single-player sortie. One connection, resolved by `welcome`. */
+function connect(): Promise<boolean> {
+  const { promise, resolve } = Promise.withResolvers<boolean>();
+  let settled = false;
+  const finish = (ok: boolean) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    if (!ok) { net?.close(); net = undefined; }
+    resolve(ok);
+  };
+  const timer = window.setTimeout(() => finish(false), CONNECT_TIMEOUT);
+  try {
+    net = new Net(lobbyLocal.name, {
+      onWelcome: () => finish(true),
+      onLobby: onLobbyMessage,
+      onBegin: onBeginMessage,
+      onRocksFull: rocks => scene.setRocks(rocks),
+      onEvents: onWorldEvents,
+      onDebrief: showDebrief,
+      onBye: id => scene.removeShip(id),
+      onClose: () => { if (settled) { if (mode === 'mp') toast('Disconnected from the host.'); } else finish(false); },
+    });
+  } catch { finish(false); }
+  return promise;
+}
+
+/** Cheap order-sensitive checksum: two clients that generated the same field must agree exactly. */
+function rockHash(rocks: Iterable<Rock>): number {
+  let hash = 0;
+  for (const rock of rocks) hash = (hash + rock.id * 7 + rock.x * 13 + rock.y * 17 + rock.radius * 19) % 1e9;
+  return hash;
+}
+
+/** Read-only view of the game for repeatable browser diagnostics; no writable hooks. */
+function snapshot() {
+  const now = performance.now();
+  const players = net ? net.view(now).players.map(p => ({ id: p.id, name: net!.playerMeta(p.id)?.name ?? '', team: net!.playerMeta(p.id)?.team ?? 'blue', x: p.x, y: p.y, vx: p.vx, vy: p.vy, a: p.a, hp: p.hp, dead: p.dead, kills: p.k, deaths: p.d })) : [];
+  return structuredClone({
+    mode, state, cargos, elapsed, paused, modalOpen, recoveredCount, missionComplete, tactical: scene.tactical,
+    you: net?.you ?? '', isHost: !!net?.isHost, latency: net?.latency ?? 0, mapId: net?.mapId ?? '',
+    team: mpTeam, started: matchStarted, players,
+    bullets: net ? net.bullets().length : 0, rocks: net ? net.rocks.size : obstacles.length,
+    splits: net?.splits ?? 0, gone: net?.gone ?? 0,
+    rockHash: rockHash(net ? net.rocks.values() : obstacles),
+    lobby: lobbyInfo.players.map(p => ({ id: p.id, name: p.name, team: p.team, ready: p.ready })),
+  });
+}
+
+const rockList = () => [...(net ? net.rocks.values() : obstacles)].map(r => ({ id: r.id, x: r.x, y: r.y, radius: r.radius }));
+
 async function boot() {
   try {
     await document.fonts.ready;
+    try { lobbyLocal.name = localStorage.getItem('drift-pilot') || 'Pilot'; } catch { /* Storage is optional. */ }
     scene = new SpaceScene($('#space-canvas'), obstacles, cargos);
-    updateContacts(); updateHUD(0);
+    scene.addShip(LOCAL, state.shipClass);
     $('.game-shell').removeAttribute('inert');
+    const connected = await connect();
+    updateContacts(); updateHUD(0);
+    if (connected) showLobby(lobbyModel(), lobbyDeps);
     $('#loading-state').classList.add('loaded');
     window.setTimeout(() => $('#loading-state').remove(), 600);
     lastFrame = performance.now(); requestAnimationFrame(frame);
-    // A read-only snapshot supports repeatable browser diagnostics without exposing mutation hooks.
-    Object.defineProperty(window, '__DRIFT__', { value: { snapshot: () => structuredClone({ state, cargos, elapsed, paused, modalOpen, recoveredCount, missionComplete, tactical: scene.tactical }) } });
+    Object.defineProperty(window, '__DRIFT__', { value: { snapshot, rocks: rockList } });
   } catch (error) {
     console.error('Flight deck initialization failed:', error);
     $('.game-shell').removeAttribute('inert');

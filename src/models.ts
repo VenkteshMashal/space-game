@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { rockyTexture } from './textures';
-import { randomSeed } from './physics';
-import type { ShipClass } from './physics';
+import { defaultLoadout, randomSeed } from './physics';
+import type { Loadout, ShipClass } from './physics';
 
 const armor = new THREE.MeshStandardMaterial({ color: '#bac4c3', roughness: 0.64, metalness: 0.55 });
 const lightArmor = new THREE.MeshStandardMaterial({ color: '#e2e3d8', roughness: 0.52, metalness: 0.4 });
@@ -64,14 +64,19 @@ function stencil(text: string, width = 256, height = 64, color = '#192b32') {
 
 export type ShipModel = { group: THREE.Group; flames: THREE.Mesh[]; rcs: THREE.Mesh[]; light: THREE.PointLight };
 
-export function buildShip(shipClass: ShipClass = 'kestrel'): ShipModel {
+export function buildShip(ship: Loadout | ShipClass = 'kestrel'): ShipModel {
+  const loadout = typeof ship === 'string' ? defaultLoadout(ship) : ship;
+  const shipClass = loadout.chassis;
   const group = new THREE.Group();
   const flames: THREE.Mesh[] = [];
   const rcs: THREE.Mesh[] = [];
   const wide = shipClass === 'mule' ? 1.3 : shipClass === 'needle' ? 0.72 : 1;
+  // Per-ship material, so it is marked owned and disposed with the model.
+  const skin = new THREE.MeshStandardMaterial({ color: loadout.color, roughness: 0.52, metalness: 0.4 });
+  skin.userData.owned = true;
   hull(group, 24 * wide, 70, 11, dark);
   hull(group, 20 * wide, 49, 10, armor, 0, 10, 5);
-  hull(group, 10 * wide, 35, 7, lightArmor, 0, 14, 13);
+  hull(group, 10 * wide, 35, 7, skin, 0, 14, 13);
   hull(group, 9 * wide, 15, 5, dark, 0, 34, 5);
   box(group, glass, [8 * wide, 2.5, 0.6], [0, 25, 17.2]);
   box(group, dark, [0.65, 3.5, 1], [0, 25, 17.7]);
@@ -79,7 +84,7 @@ export function buildShip(shipClass: ShipClass = 'kestrel'): ShipModel {
   // Individual armor tiles, service rails and exposed ribs make a working vessel.
   for (const side of [-1, 1]) {
     box(group, metal, [3, 52, 4], [side * 13 * wide, -1, 0]);
-    hull(group, 10 * wide, 43, 8, armor, side * 15 * wide, -6, 3);
+    hull(group, 10 * wide, 43, 8, skin, side * 15 * wide, -6, 3);
     for (let i = 0; i < 5; i++) {
       box(group, i % 2 ? armor : lightArmor, [8 * wide, 6.4, 1.6], [side * 15 * wide, -21 + i * 8, 8.3]);
       box(group, black, [5 * wide, 0.6, 0.25], [side * 15 * wide, -21 + i * 8, 9.3]);
@@ -98,9 +103,10 @@ export function buildShip(shipClass: ShipClass = 'kestrel'): ShipModel {
       jet.position.set(side * 29 * wide, y, 4);
       jet.visible = false; group.add(jet); rcs.push(jet);
     }
-    const gun = cylinder(group, metal, 2.5, 3.1, 5, [side * 10 * wide, 9, 15]);
+    const pod = 5 + loadout.thrustPts * 1.6;                       // a fitted ship looks fitted
+    const gun = cylinder(group, metal, 2.5, 3.1, pod, [side * 10 * wide, 9, 15]);
     gun.rotation.x = Math.PI / 2;
-    cylinder(group, black, 0.8, 0.8, 9, [side * 10 * wide, 15, 16], 8);
+    cylinder(group, black, 0.8, 0.8, pod * 1.8, [side * 10 * wide, 15, 16], 8);
     // Long radiator panels, heat pipes and engine bells.
     box(group, dark, [6, 20, 2], [side * 12 * wide, -33, -1]);
     for (let i = 0; i < 7; i++) box(group, metal, [6.5, 0.6, 0.7], [side * 12 * wide, -41 + i * 2.6, 0.4]);
@@ -212,6 +218,8 @@ export function buildCargo(index: number) {
 export function disposeObject(object: THREE.Object3D) {
   object.traverse(child => {
     if (child instanceof THREE.Mesh || child instanceof THREE.Line || child instanceof THREE.Points) child.geometry.dispose();
+    const material = (child as THREE.Mesh).material;
+    if (material) for (const m of Array.isArray(material) ? material : [material]) if (m.userData.owned) m.dispose();
   });
   object.removeFromParent();
 }
