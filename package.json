@@ -5,15 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "dev:server": "bun --watch server.ts",
-    "host": "bun run build && bun server.ts",
-    "serve": "bun server.ts",
+    "dev:server": "bun --watch src/server/serve.ts",
+    "host": "bun run build && bun src/server/serve.ts",
+    "serve": "bun src/server/serve.ts",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1",
     "test": "bun test",
-    "test:browser": "node scripts/browser-check.mjs",
-    "test:mission": "node scripts/browser-check.mjs --mission",
-    "test:mp": "node scripts/mp-check.mjs"
+    "test:outcome": "node scripts/outcome-check.mjs",
+    "test:lan": "node scripts/lan-check.mjs"
   },
   "dependencies": {
     "@fontsource/barlow": "^5.2.8",
