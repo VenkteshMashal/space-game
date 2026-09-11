@@ -68,8 +68,11 @@ function exhaustMaterial(): THREE.ShaderMaterial {
       fragmentShader: 'varying vec2 vUv; void main(){float a=pow(1.-vUv.y,1.5);vec3 c=mix(vec3(.22,.43,.88),vec3(.8,.94,1.),a);gl_FragColor=vec4(c,a*.82);}',
     });
   }
+  exhaustShader.userData.shared = true;
   return exhaustShader;
 }
+
+for (const material of [bellGlow, jetMaterial, radiatorPanel, collectorShell, beaconHaloMaterial, beaconLampMaterial]) material.userData.shared = true;
 
 // ---------------------------------------------------------------------------
 // Part geometry. Curried so a size is a number, not five near-identical builders.
@@ -83,8 +86,10 @@ export const enginePod = (size: number) => (root: THREE.Group) => {
   for (let i = 0; i < 5; i++) box(root, copper, [5.6 * size, 0.6, 0.7], [0, 8 + i * 2.4, 2.6 * size]);
   const flame = new THREE.Mesh(new THREE.ConeGeometry(4.4 * size, 38 * size, 18, 1, true), exhaustMaterial());
   flame.name = 'flame';                        // the assembler finds it by name
-  flame.rotation.z = Math.PI;
-  flame.position.set(0, -28 * size, 0);
+  flame.geometry.rotateZ(Math.PI);
+  flame.geometry.translate(0, -19 * size, 0);
+  flame.position.set(0, -9 * size, 0);
+  flame.userData.effect = true;
   flame.visible = false;
   root.add(flame);
 };

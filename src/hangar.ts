@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { buildShip } from './models';
+import { buildShip, disposeObject } from './models';
 import type { ShipModel } from './models';
 import type { BuiltShip } from './build';
 import type { ShipClass } from './physics';
@@ -15,23 +15,6 @@ const FLAME_MIN = 0.25;
 const FLAME_MAX = 0.5;
 const PLATFORM_Z = -42;
 const ENGINE_LIGHT = 14;
-
-function disposeMaterial(material: THREE.Material): void {
-  (material as THREE.Material & { map?: THREE.Texture | null }).map?.dispose();
-  material.dispose();
-}
-
-function disposeObject(root: THREE.Object3D): void {
-  root.traverse(child => {
-    // Meshes marked shared (editor gizmos, UI markers) keep their geometry and material between models.
-    if (child.userData.shared === true) return;
-    const renderable = child as Partial<THREE.Mesh>;
-    renderable.geometry?.dispose();
-    const material = renderable.material;
-    if (Array.isArray(material)) material.forEach(disposeMaterial);
-    else if (material) disposeMaterial(material);
-  });
-}
 
 /**
  * A turntable hero view of one ship, shared by the startup hangar and the in-flight shipyard
@@ -254,7 +237,7 @@ export class ShipBay {
     const time = this.time;
     this.spin += delta * this.autoRotate;
     this.turntable.rotation.z = SPIN_OFFSET + this.spin;
-    this.roller.rotation.y = Math.sin(time * TAU / 3) * 0.8;
+    this.roller.rotation.y = Math.sin(time * TAU / 12) * 0.12;
     this.roller.position.z = Math.sin(time * 1.15) * 1.4;
     const pulse = 0.5 + 0.5 * Math.sin(time * 2.2);
     this.engineLight.intensity = ENGINE_LIGHT * (0.85 + 0.15 * pulse);
@@ -270,9 +253,9 @@ export class ShipBay {
       const flicker = 0.5 + 0.5 * Math.sin(time * 9.3 + i * 1.7) * Math.sin(time * 4.1);
       const scale = FLAME_MIN + (FLAME_MAX - FLAME_MIN) * flicker;
       flame.scale.set(0.9 + flicker * 0.2, scale, 0.9 + flicker * 0.2);
-      flame.position.y = -49 - 22.5 * scale;
+      flame.visible = true;
       const material = flame.material;
-      if (!Array.isArray(material)) material.opacity = 0.45 + 0.4 * flicker;
+      if (!Array.isArray(material) && !material.userData.shared) material.opacity = 0.45 + 0.4 * flicker;
     }
   }
 }

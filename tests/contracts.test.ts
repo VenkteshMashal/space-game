@@ -3,7 +3,7 @@ import { createCargo, createObstacles, createShip, distance, RELAY, STATION } fr
 import type { Cargo, ShipState, Vec2 } from '../src/physics';
 import {
   CONTRACTS, SCAN, activeCargoIds, available, completeDock, createRun, dockable, interactive,
-  isScanned, lockedBy, objectiveSummary, progressOf, recoverCargo, remainingCargos, scanProgress,
+  isScanned, lockedBy, objectiveSummary, progressOf, recoverCargo, remainingCargos, scanProgress, scanSpec,
   suggestTarget, updateRun,
 } from '../src/contracts';
 import type { Contract, Objective, Run, RunSignal, Stage, World } from '../src/contracts';
@@ -247,6 +247,99 @@ describe('run mechanics', () => {
     world.counters.hostilesKilled = 6;
     holdStation(run, world, { x: 0, y: 0 }, DT);
     expect(progressOf(run, contract.stages[0].objectives[0])).toBeCloseTo(0.5);
+  });
+
+  test('completed holds and reaches stay complete while the next objective is performed', () => {
+    const contract = synth([{
+      title: 'Hold then return',
+      objectives: [
+        { kind: 'hold', target: { at: 'relay' }, radius: 100, speed: 10, seconds: 0.1, label: 'Hold' },
+        { kind: 'reach', target: { at: 'point', x: 0, y: 0 }, radius: 20, label: 'Reach' },
+        { kind: 'dock', label: 'Dock' },
+      ],
+    }]);
+    const run = createRun(contract), world = makeWorld();
+    holdStation(run, world, RELAY, 0.2);
+    expect(progressOf(run, contract.stages[0].objectives[0])).toBe(1);
+    expect(progressOf(run, contract.stages[0].objectives[1])).toBe(0);
+
+    holdStation(run, world, { x: 900, y: 900 }, 0.3);
+    expect(progressOf(run, contract.stages[0].objectives[0])).toBe(1);
+    holdStation(run, world, { x: 0, y: 0 }, 0.1);
+    expect(progressOf(run, contract.stages[0].objectives[1])).toBe(1);
+    holdStation(run, world, { x: 900, y: 900 }, 0.3);
+    expect(progressOf(run, contract.stages[0].objectives[1])).toBe(1);
+  });
+
+  test('SV-119 keeps the final survey hold complete while the player docks', () => {
+    const run = createRun(SV), world = makeWorld();
+    run.stageIndex = 2;
+    const drop = { x: 400, y: 1700 };
+    holdStation(run, world, drop, 4.2);
+    expect(run.stageIndex).toBe(2);
+    expect(progressOf(run, SV.stages[2].objectives[0])).toBe(1);
+
+    world.ship.position = { ...STATION };
+    world.ship.velocity = { x: 0, y: 0 };
+    completeDock(run, world);
+    expect(run.complete).toBe(true);
+  });
+
+  test('BT-047 counts approach kills toward all seven hostiles', () => {
+    const run = createRun(BT), world = makeWorld();
+    holdStation(run, world, { x: 0, y: 0 }, DT);
+    world.counters.hostilesKilled = 2;
+    world.ship.position = { ...world.cargos.find(cargo => cargo.id === 'blackbox')!.position };
+    holdStation(run, world, world.ship.position, DT);
+    expect(run.stageIndex).toBe(1);
+
+    world.counters.hostilesKilled = 7;
+    holdStation(run, world, world.ship.position, DT);
+    expect(run.stageIndex).toBe(2);
+  });
+
+  test('scaled scan specs shorten scan time and preserve the default', () => {
+    const cargo = createCargo()[0];
+    expect(scanSpec(cargo).seconds).toBe(SCAN.archive.seconds);
+    expect(scanSpec(cargo, 2).seconds).toBeCloseTo(SCAN.archive.seconds / 2);
+
+    const run = createRun(SR), world = makeWorld();
+    world.ship.spec = { ...world.ship.spec, scanScale: 2 } as typeof world.ship.spec;
+    holdStation(run, world, RELAY, RELAY_SECONDS + 0.2);
+    holdStation(run, world, cargo.position, SCAN.archive.seconds / 2 + 0.2);
+    expect(run.scanned).toContain(cargo.id);
+  });
+
+  test('collect objectives read cumulative mined units beyond current cargo capacity', () => {
+    const contract = synth([{ title: 'Unload', objectives: [{ kind: 'collect', amount: 420, label: 'Ore' }] }]);
+    const run = createRun(contract), world = makeWorld();
+    world.counters.oreHeld = 420;
+    world.ship.spec = { ...world.ship.spec, cargo: 320 };
+    holdStation(run, world, { x: 0, y: 0 }, DT);
+    expect(progressOf(run, contract.stages[0].objectives[0])).toBe(1);
+  });
+
+  test('escort completion requires the living barge at station and a player dock', () => {
+    const run = createRun(CONTRACTS.find(contract => contract.id === 'EC-005')!), world = makeWorld();
+    const ally = { id: 'hauler', name: 'Ceres Run', position: { x: 0, y: 0 }, hull: 220, maxHull: 220 };
+    world.allies = [ally];
+    holdStation(run, world, { x: 0, y: 0 }, DT);
+    world.ship.position = { ...STATION };
+    world.ship.velocity = { x: 0, y: 0 };
+    completeDock(run, world);
+    expect(run.complete).toBe(false);
+
+    ally.position = { x: STATION.x + 10, y: STATION.y };
+    completeDock(run, world);
+    expect(run.complete).toBe(true);
+  });
+
+  test('an escort fails immediately when its present ally has zero hull', () => {
+    const run = createRun(CONTRACTS.find(contract => contract.id === 'EC-005')!), world = makeWorld();
+    world.allies = [{ id: 'hauler', name: 'Ceres Run', position: { x: 0, y: 0 }, hull: 0, maxHull: 220 }];
+    const signals = holdStation(run, world, { x: 0, y: 0 }, DT);
+    expect(run.failed).toContain('escort was lost');
+    expect(signals.some(signal => signal.type === 'failed')).toBe(true);
   });
 
   test('a time limit fails the run exactly once and stops signalling', () => {

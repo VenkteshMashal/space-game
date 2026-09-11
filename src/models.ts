@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { buildFleetShip } from './fleet';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { rockyTexture } from './textures';
 import { randomSeed } from './physics';
@@ -11,6 +12,7 @@ export const metal = new THREE.MeshStandardMaterial({ color: '#667681', roughnes
 export const copper = new THREE.MeshStandardMaterial({ color: '#c88755', roughness: 0.65, metalness: 0.6 });
 export const black = new THREE.MeshStandardMaterial({ color: '#0c141a', roughness: 0.7, metalness: 0.5 });
 export const glass = new THREE.MeshStandardMaterial({ color: '#376c7c', roughness: 0.25, metalness: 0.7, emissive: '#306675', emissiveIntensity: 0.6 });
+for (const material of [armor, lightArmor, dark, metal, copper, black, glass]) material.userData.shared = true;
 let asteroidMaterial: THREE.MeshStandardMaterial | undefined;
 
 export function box(parent: THREE.Object3D, material: THREE.Material, size: number[], pos: number[], rotation = 0) {
@@ -65,81 +67,12 @@ export function stencil(text: string, width = 256, height = 64, color = '#192b32
 export type ShipModel = { group: THREE.Group; flames: THREE.Mesh[]; rcs: THREE.Mesh[]; light: THREE.PointLight };
 
 export function buildShip(shipClass: ShipClass = 'kestrel'): ShipModel {
-  const group = new THREE.Group();
-  const flames: THREE.Mesh[] = [];
-  const rcs: THREE.Mesh[] = [];
-  const wide = shipClass === 'mule' ? 1.3 : shipClass === 'needle' ? 0.72 : 1;
-  hull(group, 24 * wide, 70, 11, dark);
-  hull(group, 20 * wide, 49, 10, armor, 0, 10, 5);
-  hull(group, 10 * wide, 35, 7, lightArmor, 0, 14, 13);
-  hull(group, 9 * wide, 15, 5, dark, 0, 34, 5);
-  box(group, glass, [8 * wide, 2.5, 0.6], [0, 25, 17.2]);
-  box(group, dark, [0.65, 3.5, 1], [0, 25, 17.7]);
-
-  // Individual armor tiles, service rails and exposed ribs make a working vessel.
-  for (const side of [-1, 1]) {
-    box(group, metal, [3, 52, 4], [side * 13 * wide, -1, 0]);
-    hull(group, 10 * wide, 43, 8, armor, side * 15 * wide, -6, 3);
-    for (let i = 0; i < 5; i++) {
-      box(group, i % 2 ? armor : lightArmor, [8 * wide, 6.4, 1.6], [side * 15 * wide, -21 + i * 8, 8.3]);
-      box(group, black, [5 * wide, 0.6, 0.25], [side * 15 * wide, -21 + i * 8, 9.3]);
-    }
-    box(group, copper, [8 * wide, 3.8, 1.8], [side * 15 * wide, 7, 9]);
-    box(group, copper, [2.8, 19, 1.2], [side * 8 * wide, 9, 12]);
-    for (let i = 0; i < 8; i++) {
-      box(group, black, [3, 1.15, 1], [side * 6.1 * wide, -20 + i * 2.25, 11]);
-    }
-    // RCS pods and point defense housings.
-    for (const y of [-22, 19]) {
-      const pod = box(group, dark, [4.8, 6, 4], [side * 21 * wide, y, 4]);
-      box(pod, metal, [1, 4, 4.5], [side * 2.6, 0, 0]);
-      const jet = new THREE.Mesh(new THREE.ConeGeometry(1.2, 10, 8), new THREE.MeshBasicMaterial({ color: '#c5f1ff', transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false }));
-      jet.rotation.z = -side * Math.PI / 2;
-      jet.position.set(side * 29 * wide, y, 4);
-      jet.visible = false; group.add(jet); rcs.push(jet);
-    }
-    const gun = cylinder(group, metal, 2.5, 3.1, 5, [side * 10 * wide, 9, 15]);
-    gun.rotation.x = Math.PI / 2;
-    cylinder(group, black, 0.8, 0.8, 9, [side * 10 * wide, 15, 16], 8);
-    // Long radiator panels, heat pipes and engine bells.
-    box(group, dark, [6, 20, 2], [side * 12 * wide, -33, -1]);
-    for (let i = 0; i < 7; i++) box(group, metal, [6.5, 0.6, 0.7], [side * 12 * wide, -41 + i * 2.6, 0.4]);
-    cylinder(group, metal, 4.5, 6.8, 15, [side * 9 * wide, -37, 1]);
-    cylinder(group, dark, 5.5, 7.1, 8, [side * 9 * wide, -45, 1]);
-    cylinder(group, black, 6.1, 6.1, 0.8, [side * 9 * wide, -49.1, 1]);
-    cylinder(group, new THREE.MeshBasicMaterial({ color: '#98d8f5' }), 4.9, 4.9, 0.9, [side * 9 * wide, -49.7, 1]);
-    const flame = new THREE.Mesh(new THREE.ConeGeometry(5.5, 45, 20, 1, true), new THREE.ShaderMaterial({
-      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
-      vertexShader: 'varying vec2 vUv; void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
-      fragmentShader: 'varying vec2 vUv; void main(){float a=pow(1.-vUv.y,1.5);vec3 c=mix(vec3(.22,.43,.88),vec3(.8,.94,1.),a);gl_FragColor=vec4(c,a*.82);}',
-    }));
-    flame.rotation.z = Math.PI;
-    flame.position.set(side * 9 * wide, -70, 1);
-    flame.visible = false; group.add(flame); flames.push(flame);
-  }
-  box(group, lightArmor, [9, 11, 3], [0, -21, 8]);
-  box(group, copper, [10, 3.5, 3.2], [0, -22, 8]);
-  cylinder(group, metal, 0.45, 0.65, 14, [-6 * wide, 42, 3], 6);
-  cylinder(group, metal, 0.45, 0.65, 8, [6 * wide, 40, 3], 6);
-  const label = new THREE.Mesh(new THREE.PlaneGeometry(11, 2.7), new THREE.MeshBasicMaterial({ map: stencil(shipClass === 'kestrel' ? 'KSTR / 04' : shipClass.toUpperCase()), transparent: true, depthWrite: false }));
-  label.position.set(0, 11, 17.8); group.add(label);
-  if (shipClass === 'mule') {
-    for (const side of [-1, 1]) for (let i = 0; i < 3; i++) box(group, copper, [11, 14, 9], [side * 28, -22 + i * 16, 1]);
-  }
-  if (shipClass === 'needle') {
-    box(group, dark, [4, 50, 2], [-19, -7, -2], -0.17);
-    box(group, dark, [4, 50, 2], [19, -7, -2], 0.17);
-  }
-  const navLight = new THREE.Mesh(new THREE.SphereGeometry(1, 8, 8), new THREE.MeshBasicMaterial({ color: '#b6f6df' }));
-  navLight.position.set(-23 * wide, 18, 6); group.add(navLight);
-  const light = new THREE.PointLight('#73bdff', 0, 140, 1.4);
-  light.position.set(0, -53, 8); group.add(light);
-  return { group, flames, rcs, light };
+  return buildFleetShip(shipClass);
 }
 
 export function buildAsteroid(radius: number, seed: number) {
   const rand = randomSeed(seed);
-  const base = new THREE.IcosahedronGeometry(radius, radius > 46 ? 5 : 4);
+  const base = new THREE.IcosahedronGeometry(radius, radius > 46 ? 3 : 2);
   base.deleteAttribute('normal');
   const geometry = mergeVertices(base);
   base.dispose();
@@ -173,6 +106,7 @@ export function buildAsteroid(radius: number, seed: number) {
   if (!asteroidMaterial) {
     const surface = rockyTexture(42, 512, 256);
     asteroidMaterial = new THREE.MeshStandardMaterial({ map: surface, bumpMap: surface, bumpScale: 2.9, vertexColors: true, roughness: 0.98, metalness: 0.05 });
+    asteroidMaterial.userData.shared = true;
   }
   return new THREE.Mesh(geometry, asteroidMaterial);
 }
@@ -209,10 +143,24 @@ export function buildCargo(index: number) {
   return group;
 }
 
+/** Dispose owned resources once; catalog resources outlive model instances. */
 export function disposeObject(object: THREE.Object3D) {
+  const geometries = new Set<THREE.BufferGeometry>();
+  const materials = new Set<THREE.Material>();
+  const textures = new Set<THREE.Texture>();
   object.traverse(child => {
-    if (child instanceof THREE.Mesh || child instanceof THREE.Line || child instanceof THREE.Points) child.geometry.dispose();
+    if (child.userData.shared) return;
+    if (!(child instanceof THREE.Mesh || child instanceof THREE.Line || child instanceof THREE.Points)) return;
+    if (!child.geometry.userData.shared) geometries.add(child.geometry);
+    for (const material of Array.isArray(child.material) ? child.material : [child.material]) {
+      if (material.userData.shared) continue;
+      materials.add(material);
+      for (const value of Object.values(material)) if (value instanceof THREE.Texture && !value.userData.shared) textures.add(value);
+    }
   });
+  geometries.forEach(resource => resource.dispose());
+  textures.forEach(resource => resource.dispose());
+  materials.forEach(resource => resource.dispose());
   object.removeFromParent();
 }
 
@@ -301,17 +249,17 @@ export function buildOre() {
 export function buildGunMount(weapon: 'ac20' | 'ac70' | 'gauss' | 'cutter' | 'swarm'): { group: THREE.Group; pivot: THREE.Group } {
   const group = new THREE.Group();
   const pivot = new THREE.Group();
-  cylinder(group, dark, 3.4, 4.2, 3, [0, 0, 0], 10);           // barbette
+  cylinder(group, dark, 3.4, 4.2, 3, [0, 0, 0], 12).rotation.x = Math.PI / 2;
   if (weapon === 'ac20') {
     for (const side of [-1, 1]) {
       const barrel = cylinder(pivot, metal, 0.7, 0.9, 13, [side * 1.5, 6, 1.6], 8);
-      barrel.rotation.x = Math.PI / 2;
+      barrel.name = 'recoil-barrel';
     }
     box(pivot, armor, [6.4, 6, 3.4], [0, 1, 1.6]);
   } else if (weapon === 'ac70') {
     const barrel = cylinder(pivot, metal, 1.9, 2.4, 21, [0, 9, 2], 10);
-    barrel.rotation.x = Math.PI / 2;
-    cylinder(pivot, dark, 2.9, 2.9, 3, [0, 17, 2], 10).rotation.x = Math.PI / 2;   // muzzle brake
+    barrel.name = 'recoil-barrel';
+    cylinder(pivot, dark, 2.9, 2.9, 3, [0, 17, 2], 10); // local +Y barrel
     box(pivot, armor, [9, 9, 4.6], [0, 0, 2]);
   } else if (weapon === 'gauss') {
     const rail = box(pivot, dark, [3.2, 34, 3.2], [0, 15, 2.4]);
@@ -319,7 +267,7 @@ export function buildGunMount(weapon: 'ac20' | 'ac70' | 'gauss' | 'cutter' | 'sw
     box(pivot, metal, [8, 8, 5], [0, -2, 2.4]);
   } else if (weapon === 'cutter') {
     const head = cylinder(pivot, metal, 2.6, 3.4, 7, [0, 5, 2], 8);
-    head.rotation.x = Math.PI / 2;
+    head.name = 'cutter-head';
     const lens = new THREE.Mesh(new THREE.CircleGeometry(2.3, 12), new THREE.MeshBasicMaterial({ color: '#ff9d6b' }));
     lens.position.set(0, 8.6, 2); lens.rotation.x = -Math.PI / 2; pivot.add(lens);
   } else {
@@ -327,6 +275,9 @@ export function buildGunMount(weapon: 'ac20' | 'ac70' | 'gauss' | 'cutter' | 'sw
       box(pivot, i % 2 ? armor : dark, [3, 9, 3], [side * 3.4, 2, 1 + i * 3.2]);
     }
   }
+  box(pivot, black, [5, 5, 1], [0, -3, 0]);
+  for (const side of [-1, 1]) cylinder(pivot, copper, 0.5, 0.5, 6, [side * 3.4, 0, 0.6], 6);
+  pivot.name = 'turret-pivot';
   group.add(pivot);
   return { group, pivot };
 }
@@ -334,6 +285,7 @@ export function buildGunMount(weapon: 'ac20' | 'ac70' | 'gauss' | 'cutter' | 'sw
 const hostilePlate = new THREE.MeshStandardMaterial({ color: '#2c2a33', roughness: 0.72, metalness: 0.7 });
 const hostileTrim = new THREE.MeshStandardMaterial({ color: '#6d3b38', roughness: 0.6, metalness: 0.75 });
 const hostileLamp = new THREE.MeshBasicMaterial({ color: '#df8277' });
+for (const material of [hostilePlate, hostileTrim, hostileLamp, oreShell, oreVein, beaconLampMaterial, beaconHaloMaterial]) material.userData.shared = true;
 
 export type HostileModel = { group: THREE.Group; flames: THREE.Mesh[]; lamp: THREE.Mesh; turrets: THREE.Group[] };
 
@@ -396,7 +348,8 @@ export function buildMine(): HostileModel {
   const core = new THREE.Mesh(new THREE.IcosahedronGeometry(7, 1), hostilePlate);
   core.castShadow = true; group.add(core);
   // Spikes on the icosahedron's own vertex directions: the shape supplies its own layout.
-  const directions = new THREE.IcosahedronGeometry(1, 0).attributes.position;
+  const spikeGeometry = new THREE.IcosahedronGeometry(1, 0);
+  const directions = spikeGeometry.attributes.position;
   const seen = new Set<string>();
   const v = new THREE.Vector3();
   for (let i = 0; i < directions.count; i++) {
@@ -410,6 +363,7 @@ export function buildMine(): HostileModel {
     spike.castShadow = true;
     group.add(spike);
   }
+  spikeGeometry.dispose();
   const lamp = new THREE.Mesh(new THREE.SphereGeometry(2.1, 10, 10), hostileLamp);
   lamp.position.set(0, 0, 8); group.add(lamp);
   return { group, flames: [], lamp, turrets: [] };
@@ -424,6 +378,7 @@ export function cachedAsteroid(radius: number, seed: number): THREE.Mesh {
   let geometry = rockCache.get(key);
   if (!geometry) { geometry = buildAsteroid(bucket * 8, seed % 16).geometry; rockCache.set(key, geometry); }
   const mesh = new THREE.Mesh(geometry, asteroidMaterial!);
+  geometry.userData.shared = true;
   mesh.scale.setScalar(radius / (bucket * 8));   // exact radius from a shared shape
   return mesh;
 }

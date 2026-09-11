@@ -1,4 +1,4 @@
-import { CORES, PARTS } from './parts';
+import { CORES, PARTS, partFits } from './parts';
 import type { Build } from './build';
 import { CONTRACTS } from './contracts';
 import { clamp } from './physics';
@@ -42,9 +42,10 @@ export function validBuild(value: unknown): value is Build {
   if (!core || typeof build.id !== 'string' || typeof build.name !== 'string') return false;
   if (!build.slots || typeof build.slots !== 'object') return false;
   for (const [slot, part] of Object.entries(build.slots)) {
+    const hardpoint = core.hardpoints.find(entry => entry.id === slot);
+    if (!hardpoint) return false;
     if (part === null) continue;
-    if (!core.hardpoints.some(hardpoint => hardpoint.id === slot)) return false;
-    if (typeof part !== 'string' || !(part in PARTS)) return false;
+    if (typeof part !== 'string' || !(part in PARTS) || !partFits(PARTS[part], hardpoint)) return false;
   }
   return true;
 }

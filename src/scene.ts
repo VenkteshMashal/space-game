@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { armor as armorMaterial, buildBeacon, buildCargo, buildDerelict, buildGunMount, buildMine, buildRaider, buildShip, buildStation, buildTurret, cachedAsteroid, disposeObject, lightArmor as lightArmorMaterial, oreGeometry, oreShell as oreMaterial, oreVein as oreVeinMaterial } from './models';
@@ -25,6 +26,7 @@ const MAX_ORE_INSTANCES = 240;
 const scorchedArmor = new THREE.MeshStandardMaterial({ color: '#3a2f26', roughness: 0.97, metalness: 0.35 });
 const scorchedLight = new THREE.MeshStandardMaterial({ color: '#564a40', roughness: 0.99, metalness: 0.25 });
 const plateMaterial = new THREE.MeshStandardMaterial({ color: '#2a231d', roughness: 0.98, metalness: 0.4 });
+for (const material of [scorchedArmor, scorchedLight, plateMaterial]) material.userData.shared = true;
 /** Dissolve lifetime in seconds; main.ts drives the uniform, this is the render-loop clock. */
 const DISSOLVE_SECONDS = 0.35;
 /** Hull integrity below which the wreck states appear. */
@@ -107,7 +109,8 @@ export class SpaceScene {
   private oreDummy = new THREE.Object3D();
   private gunPivots: { root: THREE.Group; pivot: THREE.Group }[] = [];
   private muzzleLight: THREE.PointLight;
-  private composer: EffectComposer;
+  private composer?: EffectComposer;
+  private exhaustPosition = new THREE.Vector3();
   private lowSpec = false;
   private aimMarker: THREE.LineSegments;
   private aimPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
@@ -223,9 +226,13 @@ export class SpaceScene {
 
     // Bloom is the first thing to drop: it is the only pass, and it costs a full-screen render.
     this.lowSpec = this.reducedMotion || window.devicePixelRatio * window.innerWidth * window.innerHeight > 3600000;
-    this.composer = new EffectComposer(this.renderer);
-    this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.composer.addPass(new UnrealBloomPass(new THREE.Vector2(1024, 768), 0.55, 0.4, 0.82));
+    if (!this.lowSpec) {
+      this.composer = new EffectComposer(this.renderer);
+      this.composer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25));
+      this.composer.addPass(new RenderPass(this.scene, this.camera));
+      this.composer.addPass(new UnrealBloomPass(new THREE.Vector2(1024, 768), 0.36, 0.35, 1.05));
+      this.composer.addPass(new OutputPass());
+    }
 
     new ResizeObserver(() => this.resize()).observe(host);
     this.resize();
@@ -291,7 +298,7 @@ export class SpaceScene {
     if (!width || !height) return;
     this.lastWidth = width; this.lastHeight = height;
     this.renderer.setSize(width, height);
-    this.composer.setSize(width, height);
+    this.composer?.setSize(width, height);
     this.updateProjection();
   }
 
@@ -339,6 +346,16 @@ export class SpaceScene {
     this.scene.add(this.ship.group);
     this.scorchSwaps.length = 0;
     if (this.damageBelow) this.applyScorch();
+  }
+
+  /** New sortie, same meshes: reset their simulation references and recovery animation. */
+  resetCargo(cargos: Cargo[]) {
+    this.recovering.length = 0;
+    this.cargos.forEach((entry, index) => {
+      entry.cargo = cargos[index];
+      entry.mesh.position.set(entry.cargo.position.x, entry.cargo.position.y, 0);
+      entry.mesh.scale.setScalar(1); entry.mesh.visible = true;
+    });
   }
 
   project(position: Vec2, z = 0) {
@@ -484,11 +501,12 @@ export class SpaceScene {
 
   /** Attaches a visible gun to each player mount and keeps the pivots for traverse. */
   setGunMounts(defs: { weapon: string; lx: number; ly: number }[]) {
-    for (const entry of this.gunPivots) entry.root.removeFromParent();
+    for (const entry of this.gunPivots) disposeObject(entry.root);
+    for (const child of [...this.ship.group.children]) if (child.name === 'stock-weapon') disposeObject(child);
     this.gunPivots = [];
     for (const def of defs) {
       const gun = buildGunMount(def.weapon as 'ac20' | 'ac70' | 'gauss' | 'cutter' | 'swarm');
-      gun.group.position.set(def.lx, def.ly, 15);
+      gun.group.position.set(def.lx, def.ly, 13);
       this.ship.group.add(gun.group);
       this.gunPivots.push({ root: gun.group, pivot: gun.pivot });
     }
@@ -525,7 +543,8 @@ export class SpaceScene {
         const mount = hostile.mounts[i];
         if (!mount) continue;
         // Smooth damping, same law as the player's guns.
-        model.turrets[i].rotation.z += (mount.bearing - model.turrets[i].rotation.z) * (1 - Math.exp(-dt * 9));
+        model.turrets[i].rotation.z = mount.bearing;
+        model.turrets[i].position.y = -Math.max(0, mount.cooldown * mount.spec.rof - 0.72) * 6;
       }
       if (hostile.kind === 'mine') {
         const range = Math.hypot(hostile.state.position.x - this.ship.group.position.x, hostile.state.position.y - this.ship.group.position.y);
@@ -560,7 +579,7 @@ export class SpaceScene {
 
   render(frame: SceneFrame) {
     const { state, dt, time } = frame;
-    const rate = this.reducedMotion ? 1 : 1 - Math.exp(-dt * 6);
+    const rate = this.reducedMotion ? 1 : 1 - Math.exp(-Math.max(dt, 1 / 60) * 6);
     const zoomTarget = this.mode === 'map' ? this.mapZoom : this.zoom;
     const zoomValue = this.mode === 'map' ? this.mapZoomCurrent : this.zoomCurrent;
     const nextZoom = zoomValue + (zoomTarget - zoomValue) * rate;
@@ -607,7 +626,7 @@ export class SpaceScene {
     this.ship.group.position.set(state.position.x, state.position.y, 0);
     this.ship.group.rotation.z = state.angle;
     this.shield.mesh.position.set(state.position.x, state.position.y, 0);
-    this.ship.group.visible = !map || true;
+    this.ship.group.visible = true;
     this.selection.position.copy(this.ship.group.position); this.selection.rotation.z = state.angle; this.selection.scale.setScalar(SHIP_SCALE);
     this.selection.visible = !this.cinematic && !map;
     const thrust = Math.max(0, state.thrustLevel);
@@ -616,28 +635,27 @@ export class SpaceScene {
       const flicker = this.reducedMotion ? 1 : 1 + Math.sin(time * 37) * 0.035;
       const scale = thrust * flicker;
       flame.scale.y = scale;
-      flame.position.y = -49 - 22.5 * scale;
+      // Geometry is anchored at each nozzle, including custom engine pods.
     });
     this.ship.light.intensity = thrust * 35;
     this.ship.rcs.forEach((jet, i) => { jet.visible = state.rcsActive && (i % 2 === 0 || Math.abs(state.angularVelocity) > 0.05); });
-    if (this.mode === 'flight' && thrust > 0.04) {
-      const wide = state.shipClass === 'mule' ? 1.3 : state.shipClass === 'needle' ? 0.72 : 1;
-      const cos = Math.cos(state.angle), sin = Math.sin(state.angle);
-      for (const side of [-1, 1]) {
-        const lx = side * 9 * wide * SHIP_SCALE, ly = -52 * SHIP_SCALE;
-        const ex = state.position.x + lx * cos - ly * sin;
-        const ey = state.position.y + lx * sin + ly * cos;
-        const spread = 26 * (1 + thrust);
-        this.plume.emit(ex, ey, 2, -sin * 90 * thrust + (Math.random() - 0.5) * spread, cos * 90 * thrust + (Math.random() - 0.5) * spread, 0, 5 + thrust * 8, 0.42 + thrust * 0.5);
+    if (this.mode === 'flight' && thrust > 0.04 && dt > 0) {
+      this.ship.group.updateMatrixWorld(true);
+      for (const flame of this.ship.flames) {
+        flame.getWorldPosition(this.exhaustPosition);
+        const spread = 15 * (1 + thrust);
+        this.plume.emit(this.exhaustPosition.x, this.exhaustPosition.y, this.exhaustPosition.z,
+          state.velocity.x + Math.sin(state.angle) * 90 * thrust + (Math.random() - 0.5) * spread,
+          state.velocity.y - Math.cos(state.angle) * 90 * thrust + (Math.random() - 0.5) * spread,
+          0, 4 + thrust * 6, 0.3 + thrust * 0.4);
       }
-      this.waves.pulse(state.position.x - sin * 60, state.position.y + cos * 60, -4, '#7fb6e8', 22, 0.4);
     }
     if (this.mode === 'flight' && state.rcsActive && Math.hypot(state.velocity.x, state.velocity.y) > 1) {
       const speed = Math.hypot(state.velocity.x, state.velocity.y);
       const nx = state.velocity.x / speed, ny = state.velocity.y / speed;
       this.vent.emit(state.position.x + nx * 30, state.position.y + ny * 30, 6, nx * 60 + (Math.random() - 0.5) * 30, ny * 60 + (Math.random() - 0.5) * 30, 0, 4, 0.3);
     }
-    const hullRatio = state.hull / (state.shipClass === 'mule' ? 150 : state.shipClass === 'needle' ? 75 : 100);
+    const hullRatio = state.hull / state.spec.hull;
     if (this.mode === 'flight' && hullRatio < 0.45 && Math.random() < (0.45 - hullRatio) * 0.9) {
       this.vent.emit(state.position.x + (Math.random() - 0.5) * 40, state.position.y + (Math.random() - 0.5) * 40, 8, (Math.random() - 0.5) * 18, (Math.random() - 0.5) * 18, 6, 5 + Math.random() * 5, 1.1);
     }
@@ -729,7 +747,8 @@ export class SpaceScene {
       const mount = mounts?.[i];
       if (!mount) continue;
       // Smooth damping: barrels swing rather than snap.
-      pivots[i].rotation.z += (mount.bearing - pivots[i].rotation.z) * (1 - Math.exp(-dt * 9));
+      pivots[i].rotation.z = mount.bearing;
+      pivots[i].position.y = -Math.max(0, mount.cooldown * mount.spec.rof - 0.72) * 6;
     }
     if (frame.aim && this.mode === 'flight' && !this.cinematic) {
       this.aimMarker.visible = true;
@@ -737,8 +756,8 @@ export class SpaceScene {
     } else this.aimMarker.visible = false;
     if (frame.hostiles) this.syncHostiles(frame.hostiles, dt, time);
     this.muzzleLight.intensity = Math.max(0, this.muzzleLight.intensity - dt * 140);
-    if (this.lowSpec) this.renderer.render(this.scene, this.camera);
-    else this.composer.render();
+    if (this.composer) this.composer.render();
+    else this.renderer.render(this.scene, this.camera);
   }
 }
 

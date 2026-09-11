@@ -9,7 +9,7 @@ const browser = await chromium.launch({
   args: ['--enable-webgl', '--ignore-gpu-blocklist', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
 });
 const missionMode = process.argv.includes('--mission');
-const page = await browser.newPage({ viewport: missionMode ? { width: 480, height: 580 } : { width: 1440, height: 960 }, deviceScaleFactor: 1 });
+const page = await browser.newPage({ viewport: missionMode ? { width: 480, height: 580 } : { width: 1440, height: 960 }, deviceScaleFactor: 1, reducedMotion: 'reduce' });
 const errors = [];
 page.on('pageerror', error => errors.push(error.message));
 page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
@@ -186,6 +186,12 @@ try {
     await page.waitForTimeout(200);
     const saved = await page.evaluate(() => window.__DRIFT__.profile());
     assert(saved.builds.length === 1, 'the build is stored in the profile');
+    assert(await page.locator('#builder-launch').isDisabled(), 'an unowned core prevents launch');
+    const balanceBeforeCore = saved.credits;
+    await page.locator('#builder-purchase').click();
+    const purchased = await page.evaluate(() => window.__DRIFT__.profile());
+    assert(purchased.owned.includes('spar'), 'the core is owned after purchase');
+    assert.equal(purchased.credits, balanceBeforeCore - 2400, 'the core is charged exactly once');
     await page.locator('#builder-launch').click();
     await launchSortie();
     assert.equal((await snapshot()).combat.weapons.join(','), 'ac70,ac70', 'the sortie flies the hull that was built');

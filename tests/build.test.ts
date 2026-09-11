@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import { CORES, PARTS, partFits } from '../src/parts';
 import type { Hardpoint, PartCategory } from '../src/parts';
-import { buildSpec, createBuild, derive, toggleSlot } from '../src/build';
+import {
+  buildSpec, createBuild, derive, presetBuild, purchaseQuoteForBuild, purchaseQuoteForPreset, toggleSlot,
+} from '../src/build';
 import type { Build } from '../src/build';
 
 function socketFor(build: Build, category: PartCategory, index = 0): Hardpoint {
@@ -138,13 +140,19 @@ describe('deriving a build', () => {
     expect(derive(heavy).torque).toBeLessThan(derive(light).torque);
   });
 
-  test('an unknown part id or a slot the core does not own is ignored, not fatal', () => {
+  test('unknown slots are ignored, while a known part in the wrong socket is blocked', () => {
     const build = workingBuild();
     build.slots['not-a-socket'] = 'wpn-gauss';
     build.slots[socketFor(build, 'cargo', 0).id] = 'not-a-part';
+    expect(derive(build).valid).toBe(true);
+    const wrong = socketFor(build, 'cargo', 0);
+    toggleSlot(build, wrong.id, 'eng-d4');
+    expect(build.slots[wrong.id]).toBe('not-a-part');
+    build.slots[wrong.id] = 'eng-d4';
     const stats = derive(build);
-    expect(stats.valid).toBe(true);
-    expect(stats.mounts.some(mount => mount.weapon === 'gauss')).toBe(false);
+    expect(stats.valid).toBe(false);
+    expect(stats.problems.join(' | ')).toMatch(/does not fit/i);
+    expect(stats.thrust).toBe(derive(workingBuild()).thrust);
     expect(() => buildSpec(build)).not.toThrow();
   });
 
@@ -157,6 +165,8 @@ describe('deriving a build', () => {
     expect(spec.hull).toBe(Math.round(stats.hull));
     expect(spec.thrust).toBe(stats.thrust);
     expect(spec.length).toBeGreaterThan(10);
+    expect(spec.scanScale).toBe(stats.scanScale);
+    expect(spec.collectScale).toBe(stats.collectScale);
   });
 
   test('mirrored sockets install and clear as a pair', () => {
@@ -170,5 +180,33 @@ describe('deriving a build', () => {
     toggleSlot(build, mirrored!.id, null);
     expect(build.slots[mirrored!.id]).toBeNull();
     expect(build.slots[mirrored!.mirrorOf!]).toBeNull();
+  });
+
+  test('starter presets place only fitting parts and produce useful mission builds', () => {
+    for (const id of ['balanced', 'mining', 'combat'] as const) {
+      const build = presetBuild(id, `preset-${id}`);
+      for (const [slot, partId] of Object.entries(build.slots)) {
+        const hardpoint = CORES[build.core].hardpoints.find(entry => entry.id === slot)!;
+        expect(partFits(PARTS[partId!], hardpoint)).toBe(true);
+      }
+      expect(derive(build).valid).toBe(true);
+    }
+    const mining = presetBuild('mining');
+    const miningStats = derive(mining);
+    expect(miningStats.cargo).toBeGreaterThan(0);
+    expect(miningStats.mounts.some(mount => mount.weapon === 'cutter')).toBe(true);
+    const collectorSocket = Object.entries(mining.slots).find(([, part]) => part === 'utl-coll')?.[0];
+    expect(CORES[mining.core].hardpoints.find(socket => socket.id === collectorSocket)?.accepts).toContain('wing');
+    expect(derive(presetBuild('combat')).mounts.length).toBeGreaterThan(0);
+  });
+
+  test('purchase quotes count each mirrored item once and never grant ownership', () => {
+    const build = presetBuild('balanced');
+    const quote = purchaseQuoteForBuild(build, ['eng-d9', 'tnk-m', 'wpn-ac20', 'rcs-pod']);
+    expect(quote.items.map(item => item.id)).toEqual(['spar']);
+    expect(quote.total).toBe(CORES.spar.cost);
+    const mining = purchaseQuoteForPreset('mining', ['eng-d9', 'tnk-m', 'rcs-pod']);
+    expect(mining.items.map(item => item.id).sort()).toEqual(['crg-pod', 'truss', 'utl-coll', 'wpn-cutter'].sort());
+    expect(mining.total).toBe(CORES.truss.cost + PARTS['crg-pod'].cost + PARTS['utl-coll'].cost + PARTS['wpn-cutter'].cost);
   });
 });

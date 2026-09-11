@@ -89,9 +89,62 @@ export function pointInBox(box: Box, x: number, y: number): boolean {
   return Math.abs(localX) <= box.halfWidth && Math.abs(localY) <= box.halfLength;
 }
 
+/** Returns the first normalized hit time for a point swept from (x0,y0) to (x1,y1). */
+export function segmentCircleHit(
+  x0: number, y0: number, x1: number, y1: number,
+  circle: Circle,
+  radius = circle.radius,
+): number | undefined {
+  const dx = x1 - x0, dy = y1 - y0;
+  const fx = x0 - circle.x, fy = y0 - circle.y;
+  const c = fx * fx + fy * fy - radius * radius;
+  if (c <= 0) return 0;
+  const a = dx * dx + dy * dy;
+  if (a < 1e-12) return undefined;
+  const b = 2 * (fx * dx + fy * dy);
+  const discriminant = b * b - 4 * a * c;
+  if (discriminant < 0) return undefined;
+  const root = Math.sqrt(discriminant);
+  const t = (-b - root) / (2 * a);
+  return t >= 0 && t <= 1 ? t : undefined;
+}
+
+/** Returns the first normalized hit time for a point swept through an oriented box. */
+export function segmentBoxHit(
+  x0: number, y0: number, x1: number, y1: number,
+  box: Box,
+): number | undefined {
+  const cos = Math.cos(box.angle), sin = Math.sin(box.angle);
+  const startX = (x0 - box.x) * cos + (y0 - box.y) * sin;
+  const startY = -(x0 - box.x) * sin + (y0 - box.y) * cos;
+  const deltaX = (x1 - x0) * cos + (y1 - y0) * sin;
+  const deltaY = -(x1 - x0) * sin + (y1 - y0) * cos;
+  let near = 0, far = 1;
+
+  if (Math.abs(deltaX) < 1e-12) {
+    if (Math.abs(startX) > box.halfWidth) return undefined;
+  } else {
+    let enter = (-box.halfWidth - startX) / deltaX;
+    let exit = (box.halfWidth - startX) / deltaX;
+    if (enter > exit) { const swap = enter; enter = exit; exit = swap; }
+    near = Math.max(near, enter); far = Math.min(far, exit);
+    if (near > far) return undefined;
+  }
+  if (Math.abs(deltaY) < 1e-12) {
+    if (Math.abs(startY) > box.halfLength) return undefined;
+  } else {
+    let enter = (-box.halfLength - startY) / deltaY;
+    let exit = (box.halfLength - startY) / deltaY;
+    if (enter > exit) { const swap = enter; enter = exit; exit = swap; }
+    near = Math.max(near, enter); far = Math.min(far, exit);
+    if (near > far) return undefined;
+  }
+  return near >= 0 && near <= 1 ? near : undefined;
+}
+
 /** Hull colliders, taken from each model's drawn extents at the scene's ship scale. */
 export const HULL_BOXES = {
-  kestrel: { halfLength: 59, halfWidth: 30 },
-  mule: { halfLength: 59, halfWidth: 39 },
-  needle: { halfLength: 59, halfWidth: 23 },
+  kestrel: { halfLength: 59, halfWidth: 34 },
+  mule: { halfLength: 65, halfWidth: 43 },
+  needle: { halfLength: 62, halfWidth: 27 },
 } as const;

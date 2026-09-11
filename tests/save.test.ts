@@ -119,6 +119,8 @@ describe('validBuild', () => {
     expect(validBuild({ id: 'b', name: 'n', core: 'nope', slots: {} })).toBe(false);
     expect(validBuild({ id: 'b', name: 'n', core: 'spar', slots: { 'not-a-hardpoint': 'eng-d4' } })).toBe(false);
     expect(validBuild({ id: 'b', name: 'n', core: 'spar', slots: { 'port-engine-1': 'not-a-part' } })).toBe(false);
+    expect(validBuild({ id: 'b', name: 'n', core: 'spar', slots: { 'port-tank-1': 'eng-d4' } })).toBe(false);
+    expect(validBuild({ id: 'b', name: 'n', core: 'spar', slots: { 'not-a-hardpoint': null } })).toBe(false);
   });
 });
 

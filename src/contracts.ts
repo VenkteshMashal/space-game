@@ -17,9 +17,9 @@ export type Objective =
   | { kind: 'hold'; target: TargetRef; radius: number; speed: number; seconds: number; label: string }
   | { kind: 'recover'; cargo: string; label: string }
   | { kind: 'dock'; label: string }
-  | { kind: 'destroy'; what: 'hostile' | 'rock'; count: number; minRadius?: number; label: string }
+  | { kind: 'destroy'; what: 'hostile' | 'rock'; count: number; minRadius?: number; countFrom?: 'stage' | 'contract'; label: string }
   | { kind: 'collect'; amount: number; label: string }
-  | { kind: 'reach'; target: TargetRef; radius: number; label: string }
+  | { kind: 'reach'; target: TargetRef; radius: number; subject?: 'ship' | 'ally'; ally?: string; label: string }
   | { kind: 'protect'; ally: string; label: string };
 
 /** An escort stage hands the run an NPC to look after, with the route it flies. */
@@ -54,6 +54,7 @@ export type World = {
     rocksBroken: number;
     /** Radii of the rocks broken this sortie, which is what a minimum-size objective counts. */
     brokenRadii: number[];
+    /** Cumulative units mined this sortie; it may exceed the ship's current cargo load. */
     oreHeld: number;
   };
 };
@@ -98,7 +99,11 @@ export const SCAN: { archive: ScanSpec; blackbox: ScanSpec } = {
   blackbox: { radius: 125, speed: 20, seconds: 4.2 },
 };
 
-export function scanSpec(cargo: Cargo): ScanSpec { return cargo.kind === 'blackbox' ? SCAN.blackbox : SCAN.archive; }
+export function scanSpec(cargo: Cargo, scanScale = 1): ScanSpec {
+  const base = cargo.kind === 'blackbox' ? SCAN.blackbox : SCAN.archive;
+  const scale = Math.max(0.01, scanScale);
+  return scale === 1 ? base : { ...base, seconds: base.seconds / scale };
+}
 
 const key = (stage: number, index: number) => `${stage}:${index}`;
 const BONUS_KEY = 'bonus';
@@ -224,6 +229,8 @@ export function remainingCargos(run: Run, world: World): number {
 function evaluate(run: Run, world: World, objective: Objective, id: string, dt: number): number {
   switch (objective.kind) {
     case 'hold': {
+      // A completed hold is a milestone. It must survive the flight to the next objective.
+      if ((run.progress[id] ?? 0) >= 1) return 1;
       const at = resolveTarget(world, objective.target);
       const inRange = Boolean(at) && distance(world.ship.position, at!) < objective.radius && length(world.ship.velocity) < objective.speed;
       const current = run.hold[id] ?? 0;
@@ -238,12 +245,20 @@ function evaluate(run: Run, world: World, objective: Objective, id: string, dt: 
       const count = objective.what === 'hostile'
         ? world.counters.hostilesKilled
         : world.counters.brokenRadii.filter(radius => radius >= (objective.minRadius ?? 0)).length;
-      const since = count - (run.baselines[id] ?? count);
+      const baselineKey = objective.countFrom === 'contract' ? 'run:' + objective.what : id;
+      const since = count - (run.baselines[baselineKey] ?? count);
       return Math.min(1, since / objective.count);
     }
     case 'collect':
       return Math.min(1, world.counters.oreHeld / objective.amount);
     case 'reach': {
+      // Escort routes use the same objective shape but measure the named NPC at the destination.
+      if ((run.progress[id] ?? 0) >= 1) return 1;
+      if (objective.subject === 'ally') {
+        const ally = world.allies.find(entry => entry.id === objective.ally);
+        const at = resolveTarget(world, objective.target);
+        return ally && ally.hull > 0 && at && distance(ally.position, at) < objective.radius ? 1 : 0;
+      }
       const at = resolveTarget(world, objective.target);
       return at && distance(world.ship.position, at) < objective.radius ? 1 : 0;
     }
@@ -260,10 +275,17 @@ function evaluate(run: Run, world: World, objective: Objective, id: string, dt: 
 function enterStage(run: Run, world: World, signals: RunSignal[]) {
   const current = stage(run);
   run.entered.push(run.stageIndex);
+  // Contract-scoped destroy objectives include kills made during an approach stage. The first
+  // stage entry is the mission's counter baseline; later stages keep using that same baseline.
+  if (run.stageIndex === 0) {
+    if (run.baselines['run:hostile'] === undefined) run.baselines['run:hostile'] = world.counters.hostilesKilled;
+    if (run.baselines['run:rock'] === undefined) run.baselines['run:rock'] = world.counters.brokenRadii.length;
+  }
   // A new stage wants its own approach, so an earlier dock no longer counts.
   run.docked = false;
   current.objectives.forEach((objective, index) => {
     if (objective.kind !== 'destroy') return;
+    if (objective.countFrom === 'contract') return;
     run.baselines[key(run.stageIndex, index)] = objective.what === 'hostile'
       ? world.counters.hostilesKilled
       : world.counters.brokenRadii.filter(radius => radius >= (objective.minRadius ?? 0)).length;
@@ -289,7 +311,8 @@ export function updateRun(run: Run, world: World, dt: number): RunSignal[] {
   for (const id of wanted) {
     const cargo = cargoAt(world, id)!;
     if (cargo.collected || isScanned(run, cargo.id)) continue;
-    const spec = scanSpec(cargo);
+    const scanScale = (world.ship.spec as ShipState['spec'] & { scanScale?: number }).scanScale ?? 1;
+    const spec = scanSpec(cargo, scanScale);
     const inRange = distance(world.ship.position, cargo.position) < spec.radius && length(world.ship.velocity) < spec.speed;
     const previous = run.scan[cargo.id] ?? 0;
     run.scan[cargo.id] = inRange ? previous + dt : Math.max(0, previous - dt * 1.7);
@@ -311,7 +334,12 @@ export function updateRun(run: Run, world: World, dt: number): RunSignal[] {
     if (objective.kind === 'protect') {
       const ally = world.allies.find(entry => entry.id === objective.ally);
       if (ally && !run.knownAllies.includes(ally.id)) run.knownAllies.push(ally.id);
-      else if (!ally && run.knownAllies.includes(objective.ally)) {
+      if (ally && ally.hull <= 0) {
+        run.failed = objective.label + ' — the escort was lost.';
+        signals.push({ type: 'failed', reason: run.failed });
+        return signals;
+      }
+      if (!ally && run.knownAllies.includes(objective.ally)) {
         run.failed = `${objective.label} — the escort was lost.`;
         signals.push({ type: 'failed', reason: run.failed });
         return signals;
@@ -464,7 +492,7 @@ export const CONTRACTS: Contract[] = [
           { kind: 'raider', near: { at: 'derelict' }, count: 3, spread: 500 },
           { kind: 'interceptor', near: { at: 'derelict' }, count: 2, spread: 800, reaction: 0.18 },
         ],
-        objectives: [{ kind: 'destroy', what: 'hostile', count: 7, label: 'Destroy 7 hostiles' }],
+        objectives: [{ kind: 'destroy', what: 'hostile', count: 7, countFrom: 'contract', label: 'Destroy 7 hostiles' }],
       },
       { title: 'Report in', objectives: [{ kind: 'dock', label: 'Dock at Wayfarer' }] },
     ],
@@ -510,7 +538,8 @@ export const CONTRACTS: Contract[] = [
         ],
         objectives: [
           { kind: 'protect', ally: 'hauler', label: 'Keep Ceres Run alive' },
-          { kind: 'reach', target: { at: 'station' }, radius: 400, label: 'Bring her to Wayfarer' },
+          { kind: 'reach', target: { at: 'station' }, radius: 400, subject: 'ally', ally: 'hauler', label: 'Bring her to Wayfarer' },
+          { kind: 'dock', label: 'Dock at Wayfarer' },
         ],
       },
     ],

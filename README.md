@@ -107,6 +107,14 @@ WebGL 2 is required. Enable browser hardware acceleration for smooth flight. The
 
 ## Source layout
 
+The fleet now uses three separate silhouettes: an armored Kestrel corvette, a four-engine Mule cargo tug, and a narrow Needle interceptor. Static hull plates are batched by material; gun barrels point along the firing axis, recoil follows cooldown, and exhaust stays anchored to stock and custom engine nozzles. Collision bounds are measured from the fitted hull, excluding exhaust effects.
+
+Weapons resolve the first impact along their full movement segment. Player shots hit enemies, enemy shots can damage escorts, and the Swarm rack fires guided missiles. Selected threats show hull integrity and weapon range, with a visible hit confirmation. Ships also collide with one another using relative velocity and mass.
+
+The shipyard offers Balanced, Mining, and Combat starter fits with prices shown before purchase. Owned components can be reused; each missing core or part is purchased once. Saved drafts remain editable, and only valid, owned builds can launch. Survey masts shorten archive scans; collectors extend ore pickup range. Mining quotas count ore collected across station unloads, so smaller holds can make multiple trips.
+
+Survey holds remain complete on the return journey, bounty contracts count approach kills, and escort completion requires the living barge to reach Wayfarer and the pilot to dock. Relaunch restores the asteroid field and cargo models. The debrief pays each bonus once.
+
 | File | Purpose |
 | --- | --- |
 | `src/main.ts` | Startup flow, flight HUD, contract board, input, dialogs and main loop |
@@ -123,6 +131,8 @@ WebGL 2 is required. Enable browser hardware acceleration for smooth flight. The
 | `src/radar.ts` | Canvas sector radar and chart projection |
 | `src/hangar.ts` | Live 3D ship bay used by the hangar screen and the shipyard |
 | `src/models.ts` | Ship, asteroid, cargo, station, relay and derelict geometry |
+| `src/fleet.ts` | Distinct stock hulls, engine nozzles and batched armor geometry |
+| `src/sortie.ts` | Shared projectile target roster and debrief accounting |
 | `src/textures.ts` | Baked rocky surfaces and space backdrop |
 | `src/audio.ts` | Synthesized cabin sound |
 | `src/style.css` | Responsive flight deck, startup flow, shipyard and dialogs |

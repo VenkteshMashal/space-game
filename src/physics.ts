@@ -11,12 +11,15 @@ export type ShipSpec = {
   mass: number; thrust: number; fuel: number; torque: number; hull: number; length: number; cargo: number;
   /** Heat shed per second; radiator wings raise it on a custom build. */
   cooling: number;
+  /** Optional multipliers consumed by scanner and collector systems above the flight sim. */
+  scanScale?: number;
+  collectScale?: number;
 };
 
 export const SHIPS = {
-  kestrel: { name: 'Kestrel', role: 'Independent corvette', mass: 82000, thrust: 1600000, fuel: 16000, torque: 1.35, hull: 100, length: 42, cargo: 120, cooling: 0.055 },
-  mule: { name: 'Mule', role: 'Heavy salvage tug', mass: 142000, thrust: 1950000, fuel: 30000, torque: 0.82, hull: 150, length: 58, cargo: 320, cooling: 0.075 },
-  needle: { name: 'Needle', role: 'Fast reconnaissance cutter', mass: 43000, thrust: 1200000, fuel: 10000, torque: 2.05, hull: 75, length: 31, cargo: 40, cooling: 0.05 },
+  kestrel: { name: 'Kestrel', role: 'Independent corvette', mass: 82000, thrust: 1600000, fuel: 16000, torque: 1.35, hull: 100, length: 42, cargo: 120, cooling: 0.055, scanScale: 1, collectScale: 1 },
+  mule: { name: 'Mule', role: 'Heavy salvage tug', mass: 142000, thrust: 1950000, fuel: 30000, torque: 0.82, hull: 150, length: 58, cargo: 320, cooling: 0.075, scanScale: 1, collectScale: 1 },
+  needle: { name: 'Needle', role: 'Fast reconnaissance cutter', mass: 43000, thrust: 1200000, fuel: 10000, torque: 2.05, hull: 75, length: 31, cargo: 40, cooling: 0.05, scanScale: 1, collectScale: 1 },
 } as const satisfies Record<ShipClass, ShipSpec>;
 
 export type ShipState = {
@@ -217,20 +220,43 @@ export class SpatialGrid {
     }
     return out;
   }
+
+  /**
+   * Returns each rock in cells touched by a swept segment, plus one cell of
+   * margin for the largest rock radius. The cell walk is bounded by the
+   * projectile range and avoids scanning the full asteroid field.
+   */
+  nearSegment(x0: number, y0: number, x1: number, y1: number, out: Obstacle[] = []): Obstacle[] {
+    out.length = 0;
+    const minCx = Math.floor(Math.min(x0, x1) / CELL) - 1;
+    const maxCx = Math.floor(Math.max(x0, x1) / CELL) + 1;
+    const minCy = Math.floor(Math.min(y0, y1) / CELL) - 1;
+    const maxCy = Math.floor(Math.max(y0, y1) / CELL) + 1;
+    for (let cx = minCx; cx <= maxCx; cx++) for (let cy = minCy; cy <= maxCy; cy++) {
+      const bucket = this.cells.get(cellKey(cx, cy));
+      if (bucket) for (const obstacle of bucket) out.push(obstacle);
+    }
+    return out;
+  }
 }
 
 const contactPush = { x: 0, y: 0 };
 const shipHull: Box = { x: 0, y: 0, halfLength: 59, halfWidth: 30, angle: 0 };
+const shipHullB: Box = { x: 0, y: 0, halfLength: 59, halfWidth: 30, angle: 0 };
 const bodyHull: Box = { x: 0, y: 0, halfLength: 0, halfWidth: 0, angle: 0 };
+
+function writeShipBox(state: ShipState, out: Box): Box {
+  out.x = state.position.x;
+  out.y = state.position.y;
+  out.halfLength = state.collider.halfLength;
+  out.halfWidth = state.collider.halfWidth;
+  out.angle = state.angle;
+  return out;
+}
 
 /** The ship collides as its drawn hull, not as a point: halfLength runs along its nose. */
 export function shipBox(state: ShipState): Box {
-  shipHull.x = state.position.x;
-  shipHull.y = state.position.y;
-  shipHull.halfLength = state.collider.halfLength;
-  shipHull.halfWidth = state.collider.halfWidth;
-  shipHull.angle = state.angle;
-  return shipHull;
+  return writeShipBox(state, shipHull);
 }
 
 /** Resolves one contact and returns the hull damage it cost. */
@@ -259,6 +285,57 @@ export function resolveCollision(state: ShipState, rock: Obstacle): number {
   return applyContact(state, 1.3);
 }
 
+export type ShipCollisionResult = {
+  damageA: number;
+  damageB: number;
+  impulse: number;
+  relativeSpeed: number;
+};
+
+/**
+ * Separates two ship hulls and applies a mass-weighted normal impulse.
+ * The returned damage values let the mission layer show both sides of a crash.
+ */
+export function resolveShipCollision(a: ShipState, b: ShipState): ShipCollisionResult {
+  const none = { damageA: 0, damageB: 0, impulse: 0, relativeSpeed: 0 };
+  if (a.hull <= 0 || b.hull <= 0) return none;
+  if (!obbObbOut(writeShipBox(a, shipHull), writeShipBox(b, shipHullB), contactPush)) return none;
+
+  const depth = Math.hypot(contactPush.x, contactPush.y);
+  if (depth < 1e-6) return none;
+  const nx = contactPush.x / depth, ny = contactPush.y / depth;
+  const inverseA = 1 / Math.max(1, a.spec.mass);
+  const inverseB = 1 / Math.max(1, b.spec.mass);
+  const inverseTotal = inverseA + inverseB;
+
+  // The MTV is the translation required for b alone. Share it by inverse mass.
+  const moveA = inverseA / inverseTotal, moveB = inverseB / inverseTotal;
+  a.position.x -= contactPush.x * moveA;
+  a.position.y -= contactPush.y * moveA;
+  b.position.x += contactPush.x * moveB;
+  b.position.y += contactPush.y * moveB;
+
+  const relativeX = b.velocity.x - a.velocity.x;
+  const relativeY = b.velocity.y - a.velocity.y;
+  const approach = relativeX * nx + relativeY * ny;
+  const relativeSpeed = Math.max(0, -approach);
+  if (relativeSpeed <= 0) return { ...none, relativeSpeed };
+
+  const restitution = 0.45;
+  const impulse = (1 + restitution) * relativeSpeed / inverseTotal;
+  a.velocity.x -= impulse * inverseA * nx;
+  a.velocity.y -= impulse * inverseA * ny;
+  b.velocity.x += impulse * inverseB * nx;
+  b.velocity.y += impulse * inverseB * ny;
+
+  const impact = Math.min(60, Math.max(0, relativeSpeed - 4) * 0.9);
+  const damageA = Math.min(60, impact * b.spec.mass / (a.spec.mass + b.spec.mass) * 2);
+  const damageB = Math.min(60, impact * a.spec.mass / (a.spec.mass + b.spec.mass) * 2);
+  a.hull = Math.max(0, a.hull - damageA);
+  b.hull = Math.max(0, b.hull - damageB);
+  return { damageA, damageB, impulse, relativeSpeed };
+}
+
 export function resolveBodies(state: ShipState, docked: boolean): number {
   let damage = 0;
   for (const body of SOLID_BODIES) {
@@ -283,9 +360,17 @@ export function resolveBodies(state: ShipState, docked: boolean): number {
 let stationSpin = 0;
 export const setStationSpin = (angle: number) => { stationSpin = angle; };
 
+/** Returns the current world collider for a solid box, including station rotation. */
+export function solidBodyBox(body: Extract<SolidBody, { kind: 'box' }>): Box {
+  bodyHull.x = body.x; bodyHull.y = body.y;
+  bodyHull.halfLength = body.halfLength; bodyHull.halfWidth = body.halfWidth;
+  bodyHull.angle = body.angle + stationSpin;
+  return bodyHull;
+}
+
 /** Point test used by projectiles: rocks, ships and solid bodies all answer to it. */
-export function bodyAt(x: number, y: number): SolidBody | undefined {
-  for (const body of SOLID_BODIES) {
+export function bodyAt(x: number, y: number, bodies: readonly SolidBody[] = SOLID_BODIES): SolidBody | undefined {
+  for (const body of bodies) {
     if (body.kind === 'circle') {
       if (pointInCircle(body, x, y)) return body;
     } else {
@@ -364,8 +449,10 @@ export function stepOre(ore: Ore[], state: ShipState, dt: number, pickupRadius =
       chunk.y += (state.position.y - chunk.y) * Math.min(1, pull / Math.max(range, 1));
     }
     if (range < 26 && taken < space) {
-      taken += Math.min(chunk.amount, space - taken);
-      ore.splice(i, 1);
+      const loaded = Math.min(chunk.amount, space - taken);
+      taken += loaded;
+      chunk.amount -= loaded;
+      if (chunk.amount <= 0 || chunk.life <= 0) ore.splice(i, 1);
     } else if (chunk.life <= 0) ore.splice(i, 1);
   }
   return taken;

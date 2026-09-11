@@ -10,11 +10,13 @@ import { icon } from './icons';
 import { SpaceScene } from './scene';
 import { Collar } from './collar';
 import type { CollarMark } from './collar';
-import { buildShip } from './models';
+import { buildShip, disposeObject } from './models';
 import type { ShipModel } from './models';
 import { ShipBay } from './hangar';
 import { Radar } from './radar';
 import { FlightAudio } from './audio';
+import { combatTargets, sortieEarnings } from './sortie';
+import { resolveShipCollision } from './physics';
 import { clamp, createCargo, createObstacles, createShip, distance, fractureRock, heading, length, ORE_PICKUP_RADIUS, ORE_PRICE, resolveBodies, resolveCollision, setStationSpin, shipBox, SHIPS, SECTOR, SOLID_BODIES, SpatialGrid, STATION, RELAY, stepFragments, stepOre, stepShip } from './physics';
 import type { FlightInput, Obstacle, Ore, ShipClass, ShipState, Vec2 } from './physics';
 import { createHostile, fireMounts, HOSTILES, MAX_ROUNDS, Rounds, stepBeams, stepHostile, stepRounds, STOCK_MOUNTS, WEAPONS, wrapAngle } from './combat';
@@ -27,15 +29,16 @@ import type { Contract, EscortSpec, NavTarget, Run, RunSignal, SpawnSpec, World 
 import { createAlly, stepAlly } from './ally';
 import type { Ally } from './ally';
 import { Builder } from './builder';
-import { buildFromParts, buildSpec, createBuild, derive } from './build';
+import { buildFromParts, buildSpec, createBuild, derive, purchaseQuoteForBuild } from './build';
 import type { Build, BuiltShip } from './build';
 import { CORES, PARTS } from './parts';
 import { bestTime, earn, fresh, load, own, recordTime, save, spend } from './save';
 import type { Profile } from './save';
-import { Box3, Color, Vector3 } from 'three';
+import { Box3, Color, Mesh, Vector3 } from 'three';
 import type * as THREE from 'three';
 
 const $ = <T extends HTMLElement = HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
+const escapeHtml = (text: string) => text.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]!));
 
 $('#app').innerHTML = `
   <div class="game-shell flow-title" inert>
@@ -52,6 +55,7 @@ $('#app').innerHTML = `
         </button>
         <div class="contract-rule hud-mark is-live"><span id="mission-bar"></span></div>
         <p class="contract-count hud-mark is-live"><span id="stage-chip">Stage 1</span><span id="cargo-count">0 <span>/ 3</span></span></p>
+        <div class="target-telemetry" id="target-telemetry" hidden><span id="combat-target-name"></span><strong id="combat-target-hull"></strong><i><b id="combat-target-bar"></b></i><small id="combat-target-range"></small></div>
       </div>
 
       <div class="hud hud-top-right">
@@ -87,6 +91,7 @@ $('#app').innerHTML = `
       </div>
 
       <div id="world-labels" aria-label="Navigation targets"></div>
+      <span id="hit-confirm" class="hit-confirm" aria-hidden="true">×</span>
       <div class="ship-label" id="player-label"><span class="label-rule"></span><div><strong id="player-name">Kestrel</strong><small id="player-mode">Coasting</small></div></div>
       <div class="map-legend" hidden><h2>Nereid recovery zone</h2><p>5.2 × 4.2 km across, 500 m grid squares</p><span>${icon('flight')}Your vessel</span><span>${icon('beacon')}Relay beacon</span><span>${icon('box')}Salvage archive</span><span>${icon('derelict')}Derelict wreck</span><span>${icon('station')}Wayfarer station</span><span>${icon('raider')}Hostile contact</span><small>Choose a contact to set your navigation target. Tab cycles hostiles.</small></div>
       <div class="radar-plate" id="radar-plate"><canvas id="radar-canvas" aria-label="Sector chart"></canvas><div class="navigation-info"><span id="target-summary">No target</span><strong id="target-range">—</strong><small id="target-speed">Target selected</small></div></div>
@@ -207,6 +212,8 @@ let nextRockId = 100000;
 let oreHeld = 0;
 let aim: Vec2 = { x: 0, y: 0 };
 let aimFromPointer = false;
+const pointerAim = { x: 0, y: 0 };
+let lastHitTime = -1;
 let firing = false;
 let mining = false;
 let scene: SpaceScene;
@@ -271,6 +278,8 @@ function contacts(): Contact[] {
 }
 
 function targetPosition(id: string): Vec2 | undefined {
+  const ally = allies.find(entry => entry.id === id);
+  if (ally) return ally.state.position;
   if (navTarget?.id === id) return navTarget.position;
   if (id === 'station') return STATION;
   if (id === 'relay') return RELAY;
@@ -281,6 +290,8 @@ function targetPosition(id: string): Vec2 | undefined {
 
 /** Names for the navigation readouts, including waypoints that are not contacts in the world. */
 function contactName(id: string): string {
+  const ally = allies.find(entry => entry.id === id);
+  if (ally) return ally.name;
   if (navTarget?.id === id) return navTarget.name;
   if (id === 'station') return 'Wayfarer station';
   if (id === 'relay') return 'Nereid relay';
@@ -341,7 +352,7 @@ function trackNearest() {
 }
 
 function setPaused(value: boolean) {
-  paused = value; keys.clear();
+  paused = value; keys.clear(); firing = false; mining = false;
   $<HTMLElement>('.paused-indicator').hidden = !paused || modalOpen || flow !== 'flight';
   $('#pause-button').innerHTML = icon(paused ? 'play' : 'pause');
   $('#pause-button').setAttribute('aria-label', paused ? 'Resume simulation' : 'Pause simulation');
@@ -420,14 +431,21 @@ function buildStatsHTML(build: Build) {
     { label: 'Hull rating', value: String(Math.round(stats.hull)), ratio: stats.hull / 150 },
     { label: 'Attitude authority', value: stats.torque.toFixed(2), ratio: stats.torque / 2.05 },
   ];
-  return `<div class="brief-ship-head"><h3>${build.name}</h3><span>${core ? core.name : build.core} · custom build</span></div>
+  return `<div class="brief-ship-head"><h3>${escapeHtml(build.name)}</h3><span>${core ? core.name : build.core} · custom build</span></div>
     <dl>${rows.map(row => `<div class="spec-row"><dt>${row.label}</dt><i></i><dd>${row.value}</dd></div>`).join('')}</dl>`;
 }
 
 /** Measures the assembled hull so a custom ship collides as what is drawn, like the stock classes. */
-function colliderFor(model: BuiltShip) {
-  const size = new Box3().setFromObject(model.group).getSize(new Vector3());
-  return { halfLength: clamp(size.y * SHIP_SCALE / 2, 18, 120), halfWidth: clamp(size.x * SHIP_SCALE / 2, 12, 70) };
+function colliderFor(model: { group: THREE.Group }, scale = SHIP_SCALE) {
+  const bounds = new Box3();
+  model.group.updateMatrixWorld(true);
+  model.group.traverse(child => {
+    if (!(child instanceof Mesh) || child.userData.effect || child.name === 'flame' || child.name === 'rcs-jet') return;
+    child.geometry.computeBoundingBox();
+    bounds.union(child.geometry.boundingBox!.clone().applyMatrix4(child.matrixWorld));
+  });
+  return { halfLength: clamp(Math.max(Math.abs(bounds.min.y), Math.abs(bounds.max.y)) * scale, 18, 120),
+    halfWidth: clamp(Math.max(Math.abs(bounds.min.x), Math.abs(bounds.max.x)) * scale, 12, 80) };
 }
 
 function activeBuild(): Build | undefined {
@@ -464,17 +482,27 @@ function showBuilder(build?: Build) {
     },
     save: build => {
       const existing = profile.builds.find(entry => entry.id === build.id);
-      if (existing) Object.assign(existing, build);
-      else profile.builds.push(build);
+      if (existing) Object.assign(existing, structuredClone(build));
+      else profile.builds.push(structuredClone(build));
       save(profile);
       toast(`${build.name} saved to the yard.`);
     },
     launch: build => launchBuild(build),
     close: () => showHangar(),
-  }, build ?? activeBuild() ?? createBuild('spar', 'New frame', `b${Date.now().toString(36)}`));
+  }, structuredClone(build ?? activeBuild() ?? createBuild('spar', 'New frame', `b${Date.now().toString(36)}`)));
 }
 
 function launchBuild(build: Build) {
+  const stats = derive(build);
+  const quote = purchaseQuoteForBuild(build, profile.owned);
+  if (!stats.valid || quote.items.length || (selectedContract.kind === 'mining' && (!stats.cargo || !stats.mounts.length)) || (selectedContract.kind === 'bounty' && !stats.mounts.length)) {
+    showBuilder(build);
+    toast(stats.problems[0] ?? (quote.items.length ? `Purchase the remaining systems: ${quote.total.toLocaleString()} cr.` : 'Fit weapons and mission equipment before launching this contract.'));
+    return;
+  }
+  const savedBuild = profile.builds.find(entry => entry.id === build.id);
+  if (savedBuild) Object.assign(savedBuild, structuredClone(build));
+  else profile.builds.push(structuredClone(build));
   callsign = ($<HTMLInputElement>('#callsign').value.trim() || profile.callsign).slice(0, 14);
   profile.callsign = callsign;
   profile.activeShip = { kind: 'build', id: build.id };
@@ -532,7 +560,7 @@ function renderHangarTabs() {
   const active = profile.activeShip;
   const stock = (Object.keys(SHIPS) as ShipClass[]).map(type => shipCardHTML(type, active.kind === 'stock' && active.id === type)).join('');
   const builds = profile.builds.map(build => `<button class="bay-tab ${active.kind === 'build' && active.id === build.id ? 'active' : ''}" data-build="${build.id}">
-    <span class="bay-tab-name">${build.name}</span><span class="bay-tab-role">${CORES[build.core]?.name ?? 'Custom'} · ${derive(build).gees.toFixed(2)} g</span></button>`).join('');
+    <span class="bay-tab-name">${escapeHtml(build.name)}</span><span class="bay-tab-role">${CORES[build.core]?.name ?? 'Custom'} · ${derive(build).gees.toFixed(2)} g</span></button>`).join('');
   tabs.innerHTML = `${stock}${builds}<button class="bay-tab bay-tab-new" id="hangar-new-build"><span class="bay-tab-name">+ New build</span><span class="bay-tab-role">Open the shipyard</span></button>`;
   tabs.querySelectorAll<HTMLButtonElement>('[data-ship]').forEach(button => button.addEventListener('click', () => {
     setHangarShip({ kind: 'stock', id: button.dataset.ship as ShipClass });
@@ -576,7 +604,7 @@ function renderContractBoard() {
     return `<button class="contract-card ${contract.id === selectedContract.id ? 'active' : ''} ${lock ? 'locked' : ''}" data-contract="${contract.id}">
       <span class="contract-card-top"><span class="contract-kind">${contract.kicker}</span><span class="danger-pips" title="Danger ${contract.danger} of 3">${[0, 1, 2].map(step => `<i class="${step < contract.danger ? 'hot' : ''}"></i>`).join('')}</span></span>
       <b>${contract.title}</b>
-      <small>${contract.kind === 'salvage' ? 'Salvage' : contract.kind === 'mining' ? 'Mining' : contract.kind === 'bounty' ? 'Combat' : 'Survey'} · ${contract.payout.toLocaleString()} cr${contract.bonus ? ` + ${contract.bonus.credits.toLocaleString()} bonus` : ''}</small>
+      <small>${contract.kind === 'salvage' ? 'Salvage' : contract.kind === 'mining' ? 'Mining' : contract.kind === 'bounty' ? 'Combat' : contract.kind === 'escort' ? 'Escort' : 'Survey'} · ${contract.payout.toLocaleString()} cr${contract.bonus ? ` + ${contract.bonus.credits.toLocaleString()} bonus` : ''}</small>
       ${lock ? `<span class="contract-lock">Locked · finish ${lock.title}</span>` : done ? '<span class="contract-done">Completed</span>' : ''}
     </button>`;
   }).join('');
@@ -639,12 +667,14 @@ function resetSortie(shipClass: ShipClass = state.shipClass, build?: Build) {
     state = createShip(shipClass);
     scene.changeShip(shipClass);
     buildMounts(shipClass);
+    state.collider = colliderFor(scene.ship, 1);
     sortieBuild = undefined;
     $('#ship-name').textContent = SHIPS[shipClass].name;
     $('#player-name').textContent = SHIPS[shipClass].name;
     $('#ship-role').textContent = SHIPS[shipClass].role;
   }
   cargos = createCargo();
+  scene.resetCargo(cargos);
   run = createRun(selectedContract);
   navTarget = undefined;
   scene.launch = 1; scene.cinematic = false;
@@ -653,6 +683,12 @@ function resetSortie(shipClass: ShipClass = state.shipClass, build?: Build) {
   hostiles = []; pendingBounty = 0;
   for (const rock of [...fragments]) { grid.remove(rock); scene.removeRock(rock.id); }
   fragments.length = 0; ore.length = 0; oreHeld = 0; firing = false; mining = false; aimFromPointer = false;
+  for (const rock of obstacles) {
+    grid.remove(rock); rock.hp = rock.maxHp; grid.add(rock);
+    scene.removeRock(rock.id); scene.spawnRock(rock);
+  }
+  scene.setDamage(1);
+  lastHitTime = -1;
   counters.hostilesKilled = 0; counters.rocksBroken = 0; counters.oreHeld = 0; counters.brokenRadii.length = 0;
   lastPodFill = -1;
   for (let i = 0; i < MAX_ROUNDS; i++) rounds.life[i] = 0;
@@ -744,6 +780,12 @@ function updateMissionPanel() {
 }
 
 function applySignals(signals: RunSignal[]) {
+  if (!signals.length) return;
+  // Navigation must see entities spawned by this stage before choosing a destination.
+  for (const signal of signals) {
+    if (signal.type === 'spawn') spawnFromSpec(signal.spec);
+    if (signal.type === 'escort') spawnEscort(signal.spec);
+  }
   for (const signal of signals) {
     if (signal.type === 'stage') {
       banner(signal.stage.title, signal.stage.banner ?? signal.stage.objectives.map(objective => objective.label).join(' · '));
@@ -752,8 +794,6 @@ function applySignals(signals: RunSignal[]) {
       if (navTarget) targetId = navTarget.id;
       sound.ping();
     }
-    if (signal.type === 'spawn') spawnFromSpec(signal.spec);
-    if (signal.type === 'escort') spawnEscort(signal.spec);
     if (signal.type === 'scan') {
       toast(`${signal.cargo.name} resolved. Hold station for recovery.`);
       sound.ping();
@@ -784,13 +824,15 @@ function spawnFromSpec(spec: SpawnSpec) {
 function spawnEscort(spec: EscortSpec) {
   const at = resolveTarget(world(), spec.at);
   if (!at) return;
-  for (const ally of allies) removeAlly(ally.id);
+  for (const ally of [...allies]) removeAlly(ally.id);
   const route = spec.route.map(ref => resolveTarget(world(), ref)).filter((point): point is Vec2 => Boolean(point));
   const ally = createAlly(spec.id, spec.name, at, route, spec.hull);
   allies.push(ally);
   const model = buildShip('mule');
+  for (const child of [...model.group.children]) if (child.name === 'stock-weapon') disposeObject(child);
   model.group.position.set(at.x, at.y, 0);
   model.group.scale.setScalar(SHIP_SCALE);
+  model.group.updateMatrixWorld(true);
   allyModels.set(ally.id, model);
   scene.scene.add(model.group);
   updateContacts();
@@ -802,13 +844,14 @@ function removeAlly(id: string) {
   const index = allies.findIndex(ally => ally.id === id);
   if (index >= 0) allies.splice(index, 1);
   const model = allyModels.get(id);
-  if (model) { scene.scene.remove(model.group); allyModels.delete(id); }
+  if (model) { disposeObject(model.group); allyModels.delete(id); }
 }
 
 function stepAllies(dt: number) {
   for (const ally of allies) {
     const before = ally.state.hull;
-    stepAlly(ally, dt);
+    grid.near(ally.state.position.x, ally.state.position.y, nearby);
+    stepAlly(ally, dt, nearby.filter(rock => rock.z === 0));
     grid.near(ally.state.position.x, ally.state.position.y, nearby);
     for (const rock of nearby) resolveCollision(ally.state, rock);
     const model = allyModels.get(ally.id);
@@ -838,6 +881,7 @@ function updateAssist() {
 function toggleAssist() { state.assist = !state.assist; updateAssist(); toast(state.assist ? 'Attitude assist on. Thrusters stop rotation when released.' : 'Attitude assist off. Angular momentum is conserved.'); }
 
 function updateHUD(now: number) {
+  updateMissionPanel();
   const speed = length(state.velocity);
   const spec = state.spec;
   const hull = state.hull / spec.hull * 100, fuel = state.fuel / spec.fuel * 100, heat = state.heat * 100;
@@ -878,6 +922,17 @@ function updateHUD(now: number) {
   $('#session-time').textContent = `T+ ${String(Math.floor(elapsed / 60)).padStart(2, '0')}:${String(Math.floor(elapsed % 60)).padStart(2, '0')}`;
   $('#player-mode').textContent = `${callsign} · ${speed < 0.1 ? 'Holding position' : state.thrustLevel > 0 ? 'Main drive active' : state.rcsActive ? 'Maneuvering' : 'Ballistic coast'}`;
   const target = getTarget();
+  const enemy = hostiles.find(hostile => `hostile-${hostile.id}` === targetId);
+  $('#target-telemetry').hidden = !enemy || scene.cinematic || flow !== 'flight';
+  if (enemy) {
+    const hull = clamp(enemy.state.hull / HOSTILES[enemy.kind].hull, 0, 1);
+    $('#combat-target-name').textContent = hostileLabel(enemy);
+    $('#combat-target-hull').textContent = `${Math.ceil(hull * 100)}%`;
+    $('#combat-target-bar').style.width = `${hull * 100}%`;
+    const range = distance(state.position, enemy.state.position);
+    const reachable = mounts.some(mount => mount.spec.kind !== 'beam' && mount.spec.range >= range);
+    $('#combat-target-range').textContent = `${formatDistance(range)} · ${reachable ? 'Weapons in range' : 'Close to weapons range'} · Tab cycles`;
+  }
   $('#target-summary').textContent = targetName();
   $('#target-range').textContent = target ? formatDistance(distance(state.position, target)) : '—';
   const maxBrake = spec.thrust / (spec.mass + state.fuel) * 0.65;
@@ -890,12 +945,14 @@ function updateHUD(now: number) {
   const interactButton = $<HTMLButtonElement>('#interact-button');
   const scanning = activeScan();
   const prompt = $('#action-prompt');
-  const urgent = state.fuel <= 0 || tooFast;
+  const fullHold = capacity > 0 && oreHeld >= capacity;
+  const urgent = state.fuel <= 0 || tooFast || fullHold;
   interactButton.hidden = !(recoverable || canDockNow || scanning);
   interactButton.disabled = !!scanning && !(recoverable || canDockNow);
   interactButton.innerHTML = scanning ? `Scanning ${Math.round(scanning.progress * 100)}%` : recoverable ? `${recoverable.kind === 'blackbox' ? 'Recover black box' : 'Recover archive'} <kbd>R</kbd>` : `Dock at Wayfarer <kbd>R</kbd>`;
   $('#flight-tip').textContent = state.fuel <= 0 ? 'Propellant exhausted — return to the hangar to relaunch.'
     : tooFast ? 'Too fast for approach — hold X to brake.'
+    : fullHold ? 'Hold full. Dock at Wayfarer to sell ore, repair and refuel.'
     : scanning ? `Hold this vector to resolve ${scanning.name}.`
     : '';
   prompt.hidden = !(recoverable || canDockNow || scanning || urgent);
@@ -1022,7 +1079,7 @@ function activeScan() {
   for (const id of activeCargoIds(run, world())) {
     const cargo = cargos.find(entry => entry.id === id);
     if (!cargo || cargo.collected || isScanned(run, cargo.id)) continue;
-    const spec = scanSpec(cargo);
+    const spec = scanSpec(cargo, state.spec.scanScale ?? 1);
     if (distance(state.position, cargo.position) < spec.radius && speed < spec.speed) {
       return { id: cargo.id, name: cargo.name, position: cargo.position, progress: scanProgress(run, cargo.id, spec) };
     }
@@ -1079,6 +1136,7 @@ function updateLabels() {
     marker.classList.toggle('edge-left', offscreen && x <= left + 1);
     marker.hidden = (!point.visible && !offscreen) || scene.cinematic;
     marker.classList.toggle('offscreen', offscreen);
+    marker.style.setProperty('--bearing', `${Math.atan2(point.y - bounds.height / 2, point.x - bounds.width / 2) + Math.PI / 2}rad`);
     const shape = marker.querySelector<HTMLElement>('.marker-shape')!;
     shape.dataset.offscreen = String(offscreen);
     const contact = listed.find(item => item.id === id)!;
@@ -1114,7 +1172,7 @@ function updateRadar(now: number) {
       })),
       ...ore.slice(0, 40).map(chunk => ({ id: `ore-${chunk.id}`, kind: 'ore' as const, position: { x: chunk.x, y: chunk.y }, known: true, selected: false })),
     ],
-    rocks: planarRocks,
+    rocks: planarRocks.filter(rock => rock.hp > 0),
     bounds: SECTOR,
     view: { halfWidth: (scene.camera.right - scene.camera.left) / 2, halfHeight: (scene.camera.top - scene.camera.bottom) / 2 },
     zoom: scene.mode === 'map' ? scene.mapZoom : 1,
@@ -1143,16 +1201,24 @@ function frame(now: number) {
     while (accumulator >= 1 / 120) {
       stepSimulation(input, 1 / 120);
       accumulator -= 1 / 120;
+      if (paused || modalOpen || crashed || run.complete || run.failed) { accumulator = 0; break; }
     }
   } else accumulator = 0;
-  if (!aimFromPointer) aim = { x: state.position.x - Math.sin(state.angle) * 600, y: state.position.y + Math.cos(state.angle) * 600 };
-  if (flow !== 'hangar') {
+  if (aimFromPointer) aim = scene.unproject(pointerAim.x, pointerAim.y);
+  else {
+    const tracked = hostiles.find(hostile => `hostile-${hostile.id}` === targetId);
+    const lead = tracked ? distance(state.position, tracked.state.position) / (mounts[0]?.spec.speed || 620) : 0;
+    aim = tracked ? { x: tracked.state.position.x + (tracked.state.velocity.x - state.velocity.x) * lead, y: tracked.state.position.y + (tracked.state.velocity.y - state.velocity.y) * lead }
+      : { x: state.position.x - Math.sin(state.angle) * 600, y: state.position.y + Math.cos(state.angle) * 600 };
+  }
+  if (flow !== 'hangar' && flow !== 'builder' && !(modalOpen && bay)) {
     scene.render({
       state, cargos, target: getTarget() ? { id: targetId, position: getTarget()! } : undefined,
       scanning: activeScan(), rounds, beams: beamVisuals, ore, aim, mounts, hostiles,
       dt: stopped ? 0 : delta, time: now / 1000,
     });
   }
+  $('#hit-confirm').classList.toggle('active', elapsed - lastHitTime < 0.14);
   updateLabels();
   if (now - lastHUD > 85) { updateHUD(now); updateCollar(now); }
   updateRadar(now);
@@ -1177,7 +1243,17 @@ function stepSimulation(input: FlightInput, dt: number) {
   }
   stepAllies(dt);
   stepHostiles(dt);
+  const ships = [state, ...allies.filter(ally => !ally.lost).map(ally => ally.state), ...hostiles.filter(hostile => hostile.kind !== 'mine').map(hostile => hostile.state)];
+  for (let i = 0; i < ships.length; i++) for (let j = i + 1; j < ships.length; j++) {
+    const impact = resolveShipCollision(ships[i], ships[j]);
+    if (impact.damageA > 2 || impact.damageB > 2) scene.impact(ships[i].position, Math.min(1, impact.relativeSpeed / 60));
+  }
   stepWeapons(dt);
+  for (let i = hostiles.length - 1; i >= 0; i--) if (hostiles[i].state.hull <= 0) {
+    const hostile = hostiles.splice(i, 1)[0];
+    killHostile(hostile);
+  }
+  for (const ally of allies) if (ally.state.hull <= 0) ally.lost = true;
   applySignals(updateRun(run, world(), dt));
   if (state.hull <= 0 || state.fuel <= 0) {
     crashed = true; keys.clear();
@@ -1217,11 +1293,10 @@ function stepWeapons(dt: number) {
       else scene.hitFlash(beam.ex, beam.ey);
     }
   } else collapseBeams();
-  aimTargets.length = 0;
-  aimTargets.push({ state, faction: 0 });
+  combatTargets(state, hostiles, allies, aimTargets);
   for (const hit of stepRounds(rounds, grid, aimTargets, dt, SOLID_BODIES)) applyHit(hit);
   stepFragments(fragments, grid, dt);
-  const scooped = stepOre(ore, state, dt, ORE_PICKUP_RADIUS, Math.max(0, state.spec.cargo - oreHeld));
+  const scooped = stepOre(ore, state, dt, ORE_PICKUP_RADIUS * Math.min(5, state.spec.collectScale ?? 1), Math.max(0, state.spec.cargo - oreHeld));
   if (scooped > 0) { oreHeld += scooped; counters.oreHeld += scooped; }
 }
 
@@ -1238,10 +1313,18 @@ function applyHit(hit: Hit) {
   if (hit.kind === 'ship') {
     scene.hitFlash(hit.x, hit.y);
     if (hit.target === state) { flashDamage(0.5); scene.hitFlashShip(Math.atan2(hit.y - state.position.y, hit.x - state.position.x)); }
+    else if (hostiles.some(hostile => hostile.state === hit.target)) {
+      lastHitTime = elapsed;
+      const point = scene.project({ x: hit.x, y: hit.y }, 8);
+      $('#hit-confirm').style.left = `${point.x}px`; $('#hit-confirm').style.top = `${point.y}px`;
+    }
   }
 }
 
 function breakRock(rock: Obstacle) {
+  if (!scene.rocks.has(rock.id)) return;
+  rock.hp = 0;
+  counters.brokenRadii.push(rock.radius);
   const { fragments: pieces, ore: drops } = fractureRock(rock, () => nextRockId++);
   grid.remove(rock);
   scene.dissolveRock(rock.id);
@@ -1272,6 +1355,13 @@ function spawnHostiles(kind: HostileKind, near: Vec2, count: number, spread: num
     for (const rock of nearby) resolveBounceFree(hostile.state, rock);
     hostiles.push(hostile);
     scene.addHostile(hostile);
+    const model = scene.hostileModels.get(hostile.id);
+    if (model) {
+      const savedPosition = model.group.position.clone(), savedAngle = model.group.rotation.z;
+      model.group.position.set(0, 0, 0); model.group.rotation.z = 0;
+      hostile.state.collider = colliderFor(model, 1);
+      model.group.position.copy(savedPosition); model.group.rotation.z = savedAngle;
+    }
   }
   updateContacts();
   toast(count === 1 ? `${hostileLabel({ kind } as Hostile)} on scope.` : `${count} contacts on scope — ${hostileLabel({ kind } as Hostile).toLowerCase()}s inbound.`);
@@ -1302,9 +1392,12 @@ function stepHostiles(dt: number) {
 function stepMine(mine: Hostile, dt: number) {
   mine.state.position.x += mine.state.velocity.x * dt;
   mine.state.position.y += mine.state.velocity.y * dt;
-  const range = Math.hypot(mine.state.position.x - state.position.x, mine.state.position.y - state.position.y);
-  if (range > 150) return;
-  state.hull = Math.max(0, state.hull - (12 + 34 * (1 - range / 150)));
+  const friendlies = friendlyTargets();
+  if (!friendlies.some(ship => distance(mine.state.position, ship.position) < 150)) return;
+  for (const ship of friendlies) {
+    const range = distance(mine.state.position, ship.position);
+    if (range < 150) ship.hull = Math.max(0, ship.hull - (12 + 34 * (1 - range / 150)));
+  }
   scene.explode(mine.state.position.x, mine.state.position.y, 30);
   flashDamage(0.9); sound.boom();
   mine.state.hull = 0;
@@ -1370,7 +1463,7 @@ function finishContract(payout: number) {
   recordTime(profile, run.contract.id, elapsed);
   const best = previous > 0 ? Math.min(previous, elapsed) : elapsed;
   // Bounties and ore bank at the dock, not at the kill: the station is where a sortie ends.
-  const earnings = { payout, bonus: payout - run.contract.payout, ore: oreHeld * ORE_PRICE, bounty: pendingBounty };
+  const earnings = sortieEarnings(run.contract.payout, payout, oreHeld * ORE_PRICE, pendingBounty);
   lastEarnings = earnings;
   const total = earnings.payout + earnings.bonus + earnings.ore + earnings.bounty;
   earn(profile, total);
@@ -1409,7 +1502,7 @@ function launchSequence() {
   $<HTMLElement>('#hangar-screen').hidden = true;
   $<HTMLElement>('#title-screen').hidden = true;
   $<HTMLElement>('#launch-card').hidden = false;
-  $('#launch-kicker').textContent = `Contract ${selectedContract.id} · ${SHIPS[state.shipClass].name}`;
+  $('#launch-kicker').textContent = `Contract ${selectedContract.id} · ${state.spec.name}`;
   $('#launch-title').textContent = selectedContract.title;
   const first = selectedContract.stages[0];
   $('#launch-line').textContent = `Pilot ${callsign}, ${first.banner ?? first.title.toLowerCase()}. ${first.objectives[0].label}.`;
@@ -1471,13 +1564,15 @@ const canvasBounds = () => $('#space-canvas').getBoundingClientRect();
 $('#space-canvas').addEventListener('pointermove', event => {
   if (flow !== 'flight' || modalOpen) return;
   const bounds = canvasBounds();
-  aim = scene.unproject(event.clientX - bounds.left, event.clientY - bounds.top);
+  pointerAim.x = event.clientX - bounds.left; pointerAim.y = event.clientY - bounds.top;
+  aim = scene.unproject(pointerAim.x, pointerAim.y);
   aimFromPointer = true;
 });
 $('#space-canvas').addEventListener('pointerdown', event => {
   if (flow !== 'flight' || modalOpen || paused) return;
   const bounds = canvasBounds();
-  aim = scene.unproject(event.clientX - bounds.left, event.clientY - bounds.top);
+  pointerAim.x = event.clientX - bounds.left; pointerAim.y = event.clientY - bounds.top;
+  aim = scene.unproject(pointerAim.x, pointerAim.y);
   aimFromPointer = true;
   if (event.button === 0) firing = true;
   if (event.button === 2) mining = true;
@@ -1493,9 +1588,11 @@ const flightKeys = ['KeyW', 'KeyS', 'KeyA', 'KeyD', 'KeyQ', 'KeyE', 'KeyX', 'Arr
 window.addEventListener('keydown', event => {
   if (!scene || event.target instanceof HTMLInputElement || event.ctrlKey || event.metaKey || event.altKey) return;
   if (flow === 'launch') { if (event.code !== 'Escape') { finishLaunch(); } return; }
+  if (modalOpen) { if (event.code === 'Escape') closeDialog(); return; }
+  if (event.target instanceof HTMLButtonElement && (event.code === 'Space' || event.code === 'Enter')) return;
   if (flow !== 'flight') {
     if (event.code === 'Escape' && flow === 'hangar') showTitle();
-    if (event.code === 'Space' || event.code === 'Enter') { event.preventDefault(); showHangar(); }
+    else if (flow === 'title' && !['Shift', 'Control', 'Alt', 'Meta', 'Tab', 'Escape'].includes(event.key)) { event.preventDefault(); showHangar(); }
     return;
   }
   if (modalOpen) { if (event.code === 'Escape') closeDialog(); return; }
@@ -1544,7 +1641,7 @@ function showShipyard() {
   const builds = profile.builds;
   const list = builds.length
     ? `<div class="yard-builds">${builds.map(build => `<button class="yard-build ${profile.activeShip.kind === 'build' && profile.activeShip.id === build.id ? 'active' : ''}" data-load="${build.id}">
-        <b>${build.name}</b><small>${CORES[build.core]?.name ?? 'Custom'} · ${derive(build).gees.toFixed(2)} g · ${derive(build).mounts.length} guns</small></button>`).join('')}</div>`
+        <b>${escapeHtml(build.name)}</b><small>${CORES[build.core]?.name ?? 'Custom'} · ${derive(build).gees.toFixed(2)} g · ${derive(build).mounts.length} guns</small></button>`).join('')}</div>`
     : '<p class="dialog-description">No yard builds yet. The shipyard assembles a hull around a core, socket by socket.</p>';
   openDialog(`<span class="dialog-kicker">Independent fleet</span><h2 id="dialog-title">Find your kind of trouble.</h2><p class="dialog-description">Three ships. Three ways through the belt. Switching vessels starts a fresh sortie with the contract reset.</p><div class="shipyard-bay" id="shipyard-bay"></div>${innerHangar()}${list}<button class="primary-button" id="shipyard-build">Open the shipyard ${icon('ship')}</button>`, true);
   hydrateBay($('#shipyard-bay'), state.shipClass);

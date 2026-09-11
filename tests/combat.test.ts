@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { createShip, fractureRock, ORE_PICKUP_RADIUS, rockHP, SOLID_BODIES, SpatialGrid, STATION, stepOre } from '../src/physics';
+import { bodyAt, createShip, fractureRock, ORE_PICKUP_RADIUS, rockHP, resolveShipCollision, SOLID_BODIES, SpatialGrid, STATION, stepOre } from '../src/physics';
 import type { Obstacle, Ore, SolidBody } from '../src/physics';
 import { createHostile, fireMounts, HOSTILES, Rounds, stepBeams, stepHostile, stepRounds, WEAPONS, wrapAngle } from '../src/combat';
 import type { Mount } from '../src/combat';
@@ -129,12 +129,62 @@ describe('firing', () => {
     expect(Math.abs(wrapAngle(mounts[0].bearing))).toBeLessThanOrEqual(WEAPONS.ac20.arc + 1e-9);
   });
 
-  test('a missile mount stays silent until guidance ships', () => {
+  test('a missile mount fires and stores a guided round in the standard pool', () => {
     const ship = createShip();
     const mounts = [mount('swarm')];
     const rounds = new Rounds();
     for (let i = 0; i < 120; i++) fireMounts(mounts, ship, { x: 400, y: 0 }, true, rounds, 0, 1, DT);
-    expect(rounds.life.some(life => life > 0)).toBe(false);
+    const index = rounds.life.findIndex(life => life > 0);
+    expect(index).toBeGreaterThanOrEqual(0);
+    expect(rounds.kind[index]).toBe(1);
+    expect(ship.fuel).toBeLessThan(ship.spec.fuel);
+  });
+
+  test('a missile turns only within its bounded guidance rate', () => {
+    const target = createShip(); target.position = { x: 0, y: 300 };
+    const rounds = new Rounds();
+    rounds.spawn(0, 0, 240, 0, WEAPONS.swarm, 0);
+    const grid = new SpatialGrid([]);
+    const before = Math.atan2(rounds.vy[0], rounds.vx[0]);
+    stepRounds(rounds, grid, [{ state: target, faction: 1 }], DT);
+    const after = Math.atan2(rounds.vy[0], rounds.vx[0]);
+    expect(Math.abs(wrapAngle(after - before))).toBeLessThanOrEqual(1.8 * DT + 1e-6);
+    expect(target.hull).toBe(target.spec.hull);
+  });
+
+  test('a swept round resolves the nearest impact across rocks, bodies and ships', () => {
+    const near = rock({ radius: 10, x: 105, y: 0 });
+    const far = rock({ radius: 10, x: 116, y: 0 });
+    const enemy = createShip(); enemy.position = { x: 160, y: 0 };
+    const grid = new SpatialGrid([near, far]);
+    const rounds = new Rounds();
+    rounds.spawn(90, 0, 1400, 0, WEAPONS.gauss, 0);
+    const hits = stepRounds(rounds, grid, [{ state: enemy, faction: 1 }], DT, []);
+    expect(hits[0]?.kind).toBe('rock');
+    expect(hits[0]?.x).toBeLessThan(110);
+    expect(far.hp).toBe(far.maxHp);
+    expect(enemy.hull).toBe(enemy.spec.hull);
+  });
+
+  test('ship collision exchanges a mass-weighted impulse and damages both hulls', () => {
+    const light = createShip('needle');
+    const heavy = createShip('mule');
+    light.position = { x: -40, y: 0 }; heavy.position = { x: 40, y: 0 };
+    light.angle = heavy.angle = -Math.PI / 2;
+    light.velocity = { x: 50, y: 0 }; heavy.velocity = { x: -10, y: 0 };
+    const result = resolveShipCollision(light, heavy);
+    expect(result.relativeSpeed).toBeGreaterThan(0);
+    expect(result.damageA).toBeGreaterThan(0);
+    expect(result.damageB).toBeGreaterThan(0);
+    expect(light.hull).toBeLessThan(light.spec.hull);
+    expect(heavy.hull).toBeLessThan(heavy.spec.hull);
+    expect(Math.abs(light.velocity.x - heavy.velocity.x)).toBeLessThan(60);
+  });
+
+  test('bodyAt respects a caller supplied body list', () => {
+    const custom: SolidBody = { id: 'test-body', kind: 'circle', x: 12, y: 8, radius: 5, restitution: 1 };
+    expect(bodyAt(custom.x, custom.y, [custom])).toBe(custom);
+    expect(bodyAt(STATION.x, STATION.y, [custom])).toBeUndefined();
   });
 });
 
@@ -184,6 +234,7 @@ describe('hostiles', () => {
   test('a wrecked hostile runs with its nose away from the player', () => {
     const player = createShip();
     const raider = createHostile(2, 'raider', { x: 300, y: 0 });
+    raider.state.angle = -Math.PI / 2; // deterministic nose-away start for the response assertion
     raider.state.hull = HOSTILES.raider.hull * 0.2;
     const rounds = new Rounds();
     for (let i = 0; i < 480; i++) stepHostile(raider, [player], rounds, emptyGrid, DT);

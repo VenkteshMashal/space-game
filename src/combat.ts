@@ -1,5 +1,5 @@
-import { bodyAt, clamp, createShip, resolveCollision, shipBox, stepShip } from './physics';
-import { pointInBox } from './collision';
+import { clamp, createShip, resolveCollision, shipBox, solidBodyBox, stepShip } from './physics';
+import { segmentBoxHit, segmentCircleHit } from './collision';
 import type { FlightInput, Obstacle, ShipClass, ShipState, SolidBody, SpatialGrid, Vec2 } from './physics';
 
 // Reused between rounds so stepping the whole pool allocates nothing but the returned hit list.
@@ -28,6 +28,19 @@ export const WEAPONS: Record<string, WeaponSpec> = {
   swarm:  { id: 'swarm',  name: 'Swarm rack',       kind: 'missile', damage: 85,  rof: 0.7,  speed: 240,  range: 1800, spread: 0.120, heat: 0.020, draw: 4,   arc: 1.20, rockBonus: 0.6, mass: 2800, cost: 4100 },
 };
 
+const WEAPON_MUZZLE_OFFSETS: Record<WeaponKind, number> = {
+  kinetic: 13,
+  beam: 9,
+  missile: 8,
+};
+
+/** Barrel-tip distance in the same local units as Mount.lx and Mount.ly. */
+export function muzzleOffset(spec: WeaponSpec): number {
+  if (spec.id === 'ac70') return 19;
+  if (spec.id === 'gauss') return 32;
+  return WEAPON_MUZZLE_OFFSETS[spec.kind];
+}
+
 // ponytail: fixed ring buffer, oldest round is dropped on wrap. Grow MAX_ROUNDS if a build ever out-fires it.
 export const MAX_ROUNDS = 640;
 export type Faction = 0 | 1;   // 0 player, 1 hostile
@@ -40,7 +53,10 @@ export class Rounds {
   readonly life = new Float32Array(MAX_ROUNDS);
   readonly damage = new Float32Array(MAX_ROUNDS);
   readonly bonus = new Float32Array(MAX_ROUNDS);
+  readonly kind = new Uint8Array(MAX_ROUNDS); // 1 = guided missile, 0 = kinetic round
+  readonly maxSpeed = new Float32Array(MAX_ROUNDS);
   readonly faction = new Uint8Array(MAX_ROUNDS);
+  readonly target: (ShipState | undefined)[] = new Array(MAX_ROUNDS);
   private cursor = 0;
 
   spawn(x: number, y: number, vx: number, vy: number, spec: WeaponSpec, faction: Faction) {
@@ -49,6 +65,9 @@ export class Rounds {
     this.x[i] = x; this.y[i] = y; this.vx[i] = vx; this.vy[i] = vy;
     this.life[i] = spec.range / spec.speed;
     this.damage[i] = spec.damage; this.bonus[i] = spec.rockBonus; this.faction[i] = faction;
+    this.kind[i] = spec.kind === 'missile' ? 1 : 0;
+    this.maxSpeed[i] = spec.kind === 'missile' ? spec.speed * 1.35 : 0;
+    this.target[i] = undefined;
   }
 }
 
@@ -62,6 +81,43 @@ export const STOCK_MOUNTS: Record<ShipClass, { weapon: string; lx: number; ly: n
 };
 
 export const wrapAngle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
+
+function missileTarget(rounds: Rounds, index: number, targets: readonly { state: ShipState; faction: Faction }[]): ShipState | undefined {
+  const faction = rounds.faction[index] as Faction;
+  const current = rounds.target[index];
+  if (current && current.hull > 0) {
+    for (const target of targets) if (target.state === current && target.faction !== faction) return current;
+  }
+  let closest: ShipState | undefined;
+  let closestDistance = Infinity;
+  for (const candidate of targets) {
+    if (candidate.faction === faction || candidate.state.hull <= 0) continue;
+    const dx = candidate.state.position.x - rounds.x[index];
+    const dy = candidate.state.position.y - rounds.y[index];
+    const distance = dx * dx + dy * dy;
+    if (distance < closestDistance) { closestDistance = distance; closest = candidate.state; }
+  }
+  rounds.target[index] = closest;
+  return closest;
+}
+
+/** Turns a missile toward its nearest valid opposite-faction target at a capped rate. */
+function guideMissile(rounds: Rounds, index: number, targets: readonly { state: ShipState; faction: Faction }[], dt: number) {
+  const target = missileTarget(rounds, index, targets);
+  if (!target) return;
+  const speed = Math.hypot(rounds.vx[index], rounds.vy[index]);
+  if (speed < 1e-6) return;
+  const dx = target.position.x - rounds.x[index], dy = target.position.y - rounds.y[index];
+  const range = Math.hypot(dx, dy);
+  const lead = Math.min(3, range / speed);
+  const wanted = Math.atan2(dy + target.velocity.y * lead, dx + target.velocity.x * lead);
+  const current = Math.atan2(rounds.vy[index], rounds.vx[index]);
+  const turn = clamp(wrapAngle(wanted - current), -1.8 * dt, 1.8 * dt);
+  const next = current + turn;
+  const limitedSpeed = Math.min(speed, rounds.maxSpeed[index]);
+  rounds.vx[index] = Math.cos(next) * limitedSpeed;
+  rounds.vy[index] = Math.sin(next) * limitedSpeed;
+}
 
 /** Advances cooldowns and fires held mounts. Runs inside the fixed step. */
 export function fireMounts(
@@ -80,20 +136,22 @@ export function fireMounts(
     const offset = clamp(wrapAngle(wanted - hullBearing), -mount.spec.arc, mount.spec.arc);
     mount.bearing = offset;                       // the model reads this to swing the barrel
     if (mount.spec.kind === 'beam') continue;     // beams are continuous, see 1.8
-    if (mount.spec.kind === 'missile') continue;  // missiles arrive with hostiles in Phase 2; an unguided rack buys nothing yet
     if (!trigger || mount.cooldown > 0) continue;
     if (state.fuel < mount.spec.draw || state.heat > 0.98) continue;
 
     const angle = hullBearing + offset + (Math.random() - 0.5) * 2 * mount.spec.spread;
+    const muzzle = muzzleOffset(mount.spec) * scale;
+    const shotX = mx + Math.cos(angle) * muzzle;
+    const shotY = my + Math.sin(angle) * muzzle;
     // Rounds inherit ship velocity. A Newtonian sim that skips this feels wrong the moment you strafe.
-    rounds.spawn(mx, my,
+    rounds.spawn(shotX, shotY,
       state.velocity.x + Math.cos(angle) * mount.spec.speed,
       state.velocity.y + Math.sin(angle) * mount.spec.speed,
       mount.spec, faction);
     mount.cooldown = 1 / mount.spec.rof;
     state.fuel = Math.max(0, state.fuel - mount.spec.draw);
     state.heat = clamp(state.heat + mount.spec.heat, 0, 1);
-    onShot?.(mx, my, angle, mount.spec);
+    onShot?.(shotX, shotY, angle, mount.spec);
   }
 }
 
@@ -107,54 +165,55 @@ export function stepRounds(rounds: Rounds, grid: SpatialGrid, targets: { state: 
   const hits: Hit[] = [];
   for (let i = 0; i < MAX_ROUNDS; i++) {
     if (rounds.life[i] <= 0) continue;
+    if (rounds.kind[i]) guideMissile(rounds, i, targets, dt);
     const vx = rounds.vx[i], vy = rounds.vy[i];
+    const previousLife = rounds.life[i];
     rounds.life[i] -= dt;
-    if (rounds.life[i] <= 0) {
-      // Range exhausted: the round coasts to where it died and expires without resolving a hit.
-      rounds.x[i] += vx * dt; rounds.y[i] += vy * dt;
-      hits.push({ kind: 'expire', x: rounds.x[i], y: rounds.y[i] });
-      continue;
+    // A dying round only travels the part of this step left in its range.
+    const travelDt = Math.min(dt, previousLife);
+    const x0 = rounds.x[i], y0 = rounds.y[i];
+    const x1 = x0 + vx * travelDt, y1 = y0 + vy * travelDt;
+    let bestT = Infinity;
+    let bestRock: Obstacle | undefined;
+    let bestTarget: ShipState | undefined;
+    let bestKind: 'rock' | 'ship' | 'body' | undefined;
+
+    for (const target of targets) {
+      if (target.faction === rounds.faction[i] || target.state.hull <= 0) continue;
+      const t = segmentBoxHit(x0, y0, x1, y1, shipBox(target.state));
+      if (t !== undefined && t < bestT) { bestT = t; bestTarget = target.state; bestKind = 'ship'; }
+    }
+    for (const body of bodies) {
+      const t = body.kind === 'circle'
+        ? segmentCircleHit(x0, y0, x1, y1, body)
+        : segmentBoxHit(x0, y0, x1, y1, solidBodyBox(body));
+      if (t !== undefined && t < bestT) { bestT = t; bestKind = 'body'; }
+    }
+    grid.nearSegment(x0, y0, x1, y1, roundNearby);
+    for (const rock of roundNearby) {
+      if (rock.z !== 0 || rock.hp <= 0) continue;
+      const t = segmentCircleHit(x0, y0, x1, y1, rock, rock.radius * 0.9);
+      if (t !== undefined && t < bestT) { bestT = t; bestRock = rock; bestKind = 'rock'; }
     }
 
-    // ponytail: point test with a 2x substep above 700 m/s. Swept test only if a faster weapon lands.
-    const substeps = vx * vx + vy * vy > 490000 ? 2 : 1;
-    const step = dt / substeps;
-    let struck = false;
-    let px = rounds.x[i], py = rounds.y[i];
-    for (let s = 1; s <= substeps; s++) {
-      // Midpoint then endpoint: a 1400 m/s round covers ~12 m per step, enough to jump a 9 m rock whole.
-      const nx = rounds.x[i] + vx * step * s;
-      const ny = rounds.y[i] + vy * step * s;
-
-      for (const target of targets) {
-        if (target.faction === rounds.faction[i] || target.state.hull <= 0) continue;
-        if (!pointInBox(shipBox(target.state), nx, ny)) continue;
+    if (bestKind) {
+      const hitX = x0 + (x1 - x0) * bestT, hitY = y0 + (y1 - y0) * bestT;
+      rounds.x[i] = hitX; rounds.y[i] = hitY; rounds.life[i] = 0;
+      if (bestKind === 'ship') {
         const damage = rounds.damage[i];
-        target.state.hull = Math.max(0, target.state.hull - damage);
-        hits.push({ kind: 'ship', target: target.state, x: nx, y: ny, damage });
-        struck = true; break;
+        bestTarget!.hull = Math.max(0, bestTarget!.hull - damage);
+        hits.push({ kind: 'ship', target: bestTarget!, x: hitX, y: hitY, damage });
+      } else if (bestKind === 'body') {
+        hits.push({ kind: 'body', x: hitX, y: hitY });
+      } else {
+        const damage = rounds.damage[i] * rounds.bonus[i];
+        bestRock!.hp -= damage;
+        hits.push({ kind: 'rock', rock: bestRock!, x: hitX, y: hitY, damage, destroyed: bestRock!.hp <= 0 });
       }
-      if (!struck && bodies.length && bodyAt(nx, ny)) {
-        hits.push({ kind: 'body', x: nx, y: ny });
-        struck = true;
-      }
-      if (!struck) {
-        grid.near(nx, ny, roundNearby);
-        for (const rock of roundNearby) {
-          if (rock.z !== 0 || rock.hp <= 0) continue;
-          if (Math.hypot(nx - rock.x, ny - rock.y) > rock.radius * 0.9) continue;
-          const damage = rounds.damage[i] * rounds.bonus[i];
-          rock.hp -= damage;
-          hits.push({ kind: 'rock', rock, x: nx, y: ny, damage, destroyed: rock.hp <= 0 });
-          struck = true; break;
-        }
-      }
-
-      px = nx; py = ny;
-      if (struck) break;
+    } else {
+      rounds.x[i] = x1; rounds.y[i] = y1;
+      if (rounds.life[i] <= 0) hits.push({ kind: 'expire', x: x1, y: y1 });
     }
-    rounds.x[i] = px; rounds.y[i] = py;
-    if (struck) rounds.life[i] = 0;
   }
   return hits;
 }
@@ -169,9 +228,12 @@ export function stepBeams(mounts: Mount[], state: ShipState, grid: SpatialGrid, 
   for (const mount of mounts) {
     if (mount.spec.kind !== 'beam' || !trigger) continue;
     if (state.fuel < mount.spec.draw * dt || state.heat > 0.99) continue;
-    const mx = state.position.x + (mount.lx * cos - mount.ly * sin) * scale;
-    const my = state.position.y + (mount.lx * sin + mount.ly * cos) * scale;
     const angle = hullBearing + mount.bearing;
+    const mountX = state.position.x + (mount.lx * cos - mount.ly * sin) * scale;
+    const mountY = state.position.y + (mount.lx * sin + mount.ly * cos) * scale;
+    const muzzle = muzzleOffset(mount.spec) * scale;
+    const mx = mountX + Math.cos(angle) * muzzle;
+    const my = mountY + Math.sin(angle) * muzzle;
     const dx = Math.cos(angle), dy = Math.sin(angle);
 
     // 12 samples over a 210 m beam is a 17 m step — finer than the smallest rock we let survive.
