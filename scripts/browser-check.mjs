@@ -16,7 +16,9 @@ page.on('console', message => { if (message.type() === 'error') errors.push(mess
 const snapshot = () => page.evaluate(() => window.__DRIFT__.snapshot());
 const launchSortie = async () => {
   await page.waitForFunction(() => window.__DRIFT__.snapshot().flow === 'flight', { timeout: 25000 });
-  await page.waitForTimeout(600);
+  // Control is handed over when the launch card clears; pausing during the cinematic is ignored.
+  await page.locator('.launch-card').waitFor({ state: 'hidden', timeout: 20000 }).catch(() => {});
+  await page.waitForTimeout(400);
 };
 
 try {
@@ -51,8 +53,9 @@ try {
     await page.screenshot({ path: 'artifacts/launch.png' });
     await launchSortie();
     await page.screenshot({ path: 'artifacts/desktop.png' });
-    assert.equal((await snapshot()).mission.stage, 'relay', 'first objective is the relay download');
-    assert(await page.locator('#radar-canvas').isVisible(), 'sector radar is drawn');
+    assert.equal((await snapshot()).stage, 0, 'the sortie opens on the first contract stage');
+    assert(await page.locator('#collar-canvas').isVisible(), 'the bearing ring is drawn in flight');
+    assert.equal(await page.locator('#radar-plate').isVisible(), false, 'the sector chart stays out of the flight view');
 
     await page.keyboard.down('w');
     await page.waitForFunction(() => Math.hypot(window.__DRIFT__.snapshot().state.velocity.x, window.__DRIFT__.snapshot().state.velocity.y) > 8, { timeout: 20000 });
@@ -83,6 +86,7 @@ try {
     await page.locator('[data-view="map"]').click();
     assert.equal((await snapshot()).tactical, true);
     assert(await page.locator('.map-legend').isVisible(), 'sector chart legend is shown');
+    assert(await page.locator('#radar-canvas').isVisible(), 'the sector chart is drawn in map mode');
     await page.screenshot({ path: 'artifacts/system-map.png' });
     await page.locator('[data-view="flight"]').click();
     await page.locator('#assist-button').click(); assert.equal((await snapshot()).state.assist, false);
@@ -108,6 +112,92 @@ try {
     await launchSortie();
     assert.equal((await snapshot()).state.shipClass, 'needle');
     assert.equal((await snapshot()).recoveredCount, 0);
+
+    // --- The shipyard: assemble a hull, buy a part, save it, fly it -------------------------
+    await page.evaluate(() => window.__DRIFT__.openShipyard());
+    await page.locator('#build-viewport canvas').waitFor({ timeout: 20000 });
+    await page.waitForTimeout(900);
+    await page.screenshot({ path: 'artifacts/build-empty.png' });
+    const yard = () => page.evaluate(() => window.__DRIFT__.builder());
+    /**
+     * Fits a part through the real UI: click sockets until one that offers the part is selected,
+     * then click the part. Gizmos can overlap in projection, so the first click is not always the
+     * socket that ends up selected — the panel is the source of truth.
+     */
+    const fit = async (match, part) => {
+      // Sockets of the wanted category first, then everything on screen: gizmos overlap in
+      // projection, so the panel decides which socket a click actually reached.
+      const order = await page.evaluate(selector => {
+        const all = window.__DRIFT__.builder().sockets.filter(entry => entry.onScreen);
+        return all.sort((a, b) => (b.id.includes(selector) ? 1 : 0) - (a.id.includes(selector) ? 1 : 0));
+      }, match);
+      assert(order.some(entry => entry.id.includes(match)), `a ${match} socket is on screen`);
+      for (const socket of order) {
+        await page.mouse.click(socket.x, socket.y);
+        await page.waitForTimeout(160);
+        const chosen = await page.locator('.builder-slot').getAttribute('data-socket');
+        const option = page.locator(`[data-part="${part}"]`);
+        if (chosen && await option.count() > 0) {
+          await option.click();
+          await page.waitForTimeout(220);
+          return chosen;
+        }
+      }
+      throw new Error(`no socket accepted ${part}`);
+    };
+    assert((await yard()).core === 'spar', 'the shipyard opens on the cheapest core');
+    assert((await yard()).stats.valid === false, 'an empty frame refuses to launch');
+    assert(await page.locator('#builder-launch').isDisabled(), 'launch is disabled while the build is invalid');
+    const engineSocket = await fit('engine', 'eng-d9');
+    await fit('tank', 'tnk-m');
+    await fit('rcs', 'rcs-pod');
+    assert((await yard()).stats.valid, 'engines, tanks and thrusters make a flyable hull');
+    assert((await yard()).stats.mounts.length === 0, 'a hull with no guns reports no mounts');
+    const creditsBefore = (await page.evaluate(() => window.__DRIFT__.profile())).credits;
+    await fit('gun', 'wpn-ac70');
+    const afterBuy = await page.evaluate(() => window.__DRIFT__.profile());
+    assert(afterBuy.credits === creditsBefore - 2600, `an unowned gun is bought with credits (${creditsBefore} → ${afterBuy.credits})`);
+    assert(afterBuy.owned.includes('wpn-ac70'), 'the purchase is recorded in the profile');
+    const guns = (await yard()).stats.mounts;
+    assert(guns.length === 2 && guns[0].lx === -guns[1].lx, 'mirrored gun sockets take a pair');
+    assert(guns.every(gun => gun.weapon === 'ac70'), 'the fitted guns are the ones that were bought');
+    // A filled socket is selectable again, and a part the balance cannot cover is refused there.
+    const before = await page.evaluate(() => ({ credits: window.__DRIFT__.profile().credits, thrust: window.__DRIFT__.builder().stats.thrust }));
+    const refitSocket = await fit('engine', 'eng-k12');
+    assert(refitSocket, 'a fitted socket can be selected and refitted');
+    const refused = await page.evaluate(() => ({ credits: window.__DRIFT__.profile().credits, thrust: window.__DRIFT__.builder().stats.thrust, owned: window.__DRIFT__.profile().owned, slots: window.__DRIFT__.builder().slots }));
+    assert(before.credits < 9200, 'the balance cannot cover the K12 in this scenario');
+    assert.equal(before.credits, refused.credits, 'a refused purchase does not touch the balance');
+    assert.equal(refused.thrust, before.thrust, 'a refused purchase leaves the build untouched');
+    assert(!refused.owned.includes('eng-k12'), 'a refused part is never added to the inventory');
+    assert.equal(refused.slots[refitSocket], 'eng-d9', 'the refused part does not replace what is fitted');
+    assert.equal(refused.slots[engineSocket], 'eng-d9', 'the first engine stays bolted on');
+    // The core picker spends through the same path, without a raycast in the way.
+    const coreBefore = await page.evaluate(() => window.__DRIFT__.profile().credits);
+    await page.locator('[data-core="truss"]').click();
+    await page.waitForTimeout(250);
+    const coreAfter = await page.evaluate(() => ({ core: window.__DRIFT__.builder().core, credits: window.__DRIFT__.profile().credits, owned: window.__DRIFT__.profile().owned }));
+    assert(coreAfter.credits < 6400, 'the balance cannot cover a truss core in this scenario');
+    assert.equal(coreAfter.core, 'spar', 'an unaffordable core is not adopted');
+    assert.equal(coreAfter.credits, coreBefore, 'the refused core does not touch the balance');
+    assert(!coreAfter.owned.includes('truss'), 'the refused core is not added to the inventory');
+    await page.screenshot({ path: 'artifacts/build-fitted.png' });
+    await page.locator('#builder-save').click();
+    await page.waitForTimeout(200);
+    const saved = await page.evaluate(() => window.__DRIFT__.profile());
+    assert(saved.builds.length === 1, 'the build is stored in the profile');
+    await page.locator('#builder-launch').click();
+    await launchSortie();
+    assert.equal((await snapshot()).combat.weapons.join(','), 'ac70,ac70', 'the sortie flies the hull that was built');
+    assert.equal(await page.locator('#ship-name').textContent(), 'New frame');
+    await page.screenshot({ path: 'artifacts/build-flight.png' });
+    await page.evaluate(() => window.__DRIFT__.openHangar());
+    const tabs = await page.locator('#hangar-tabs .bay-tab').allTextContents();
+    assert(tabs.some(text => text.includes('New frame')), 'the saved build appears as a hangar tab');
+    await page.screenshot({ path: 'artifacts/hangar-build-tab.png' });
+    await page.locator('#launch-sortie').click();
+    await launchSortie();
+    assert.equal((await snapshot()).combat.weapons.join(','), 'ac70,ac70', 'the hangar relaunches the saved build');
     const zoomBefore = (await snapshot()).zoom;
     await page.locator('#zoom-in').click();
     assert((await snapshot()).zoom > zoomBefore, 'zoom in raises the camera scale');
@@ -128,7 +218,7 @@ try {
     await page.mouse.up();
     assert(Math.hypot((await snapshot()).state.velocity.x, (await snapshot()).state.velocity.y) > 1, 'touch burn control accelerates ship');
     assert.equal(errors.length, 0, `browser errors: ${errors.join('; ')}`);
-    writeFileSync('artifacts/browser-results.json', JSON.stringify({ passed: true, errors, checks: ['title screen', 'hangar bay', 'launch cinematic', 'WebGL scene', 'thrust', 'propellant', 'inertia', 'rotation', 'braking', 'pause', 'sector radar', 'tactical chart', 'assist', 'cabin audio', 'flight manual', 'all ship classes', 'zoom', 'cinematic view', 'mobile layout', 'touch input'] }, null, 2));
+    writeFileSync('artifacts/browser-results.json', JSON.stringify({ passed: true, errors, checks: ['title screen', 'hangar bay', 'launch cinematic', 'WebGL scene', 'bearing ring', 'sector chart', 'thrust', 'propellant', 'inertia', 'rotation', 'braking', 'pause', 'sector radar', 'tactical chart', 'assist', 'cabin audio', 'flight manual', 'all ship classes', 'shipyard assembly', 'part purchase', 'refused purchase', 'build persistence', 'custom hull flight', 'zoom', 'cinematic view', 'mobile layout', 'touch input'] }, null, 2));
     console.log('Browser checks passed: startup flow, rendering, flight controls, chart, shipyard, mobile and touch.');
   }
 } catch (error) {

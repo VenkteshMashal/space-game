@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { buildShip } from './models';
 import type { ShipModel } from './models';
+import type { BuiltShip } from './build';
 import type { ShipClass } from './physics';
 
 export type ShipBayOptions = { showPlatform?: boolean; autoRotate?: number };
@@ -22,6 +23,8 @@ function disposeMaterial(material: THREE.Material): void {
 
 function disposeObject(root: THREE.Object3D): void {
   root.traverse(child => {
+    // Meshes marked shared (editor gizmos, UI markers) keep their geometry and material between models.
+    if (child.userData.shared === true) return;
     const renderable = child as Partial<THREE.Mesh>;
     renderable.geometry?.dispose();
     const material = renderable.material;
@@ -36,9 +39,9 @@ function disposeObject(root: THREE.Object3D): void {
  */
 export class ShipBay {
   private readonly container: HTMLElement;
-  private readonly renderer: THREE.WebGLRenderer;
-  private readonly scene = new THREE.Scene();
-  private readonly camera: THREE.PerspectiveCamera;
+  readonly renderer: THREE.WebGLRenderer;
+  readonly scene = new THREE.Scene();
+  readonly camera: THREE.PerspectiveCamera;
   private readonly turntable = new THREE.Group();
   private readonly roller = new THREE.Group();
   private readonly engineLight: THREE.PointLight;
@@ -46,6 +49,7 @@ export class ShipBay {
   private readonly resizeObserver: ResizeObserver;
   private autoRotate: number;
   private model?: ShipModel;
+  private custom?: BuiltShip;
   private raf: number | undefined;
   private active = false;
   private disposed = false;
@@ -71,6 +75,8 @@ export class ShipBay {
     container.appendChild(canvas);
 
     this.camera = new THREE.PerspectiveCamera(30, 1, 0.1, 4000);
+    // Layer 1 carries editor gizmos: the shipyard camera draws them, its raycasts only test them.
+    this.camera.layers.enable(1);
     this.camera.position.set(78, -122, 168);
     this.camera.lookAt(0, -6, 0);
 
@@ -155,11 +161,36 @@ export class ShipBay {
     return group;
   }
 
+  /** Shows an assembled custom hull instead of a stock ship. */
+  setCustom(built: BuiltShip | undefined): void {
+    if (this.disposed) return;
+    if (this.model) {
+      disposeObject(this.model.group);
+      this.model.group.removeFromParent();
+      this.model = undefined;
+    }
+    if (this.custom) {
+      disposeObject(this.custom.group);
+      this.custom.group.removeFromParent();
+      this.custom = undefined;
+    }
+    if (!built) return;
+    this.custom = built;
+    built.group.scale.setScalar(SWAP_FROM);
+    this.roller.add(built.group);
+    this.swapAt = this.time;
+  }
+
   setShip(type: ShipClass): void {
     if (this.disposed) return;
     if (this.model) {
       disposeObject(this.model.group);
       this.model.group.removeFromParent();
+    }
+    if (this.custom) {
+      disposeObject(this.custom.group);
+      this.custom.group.removeFromParent();
+      this.custom = undefined;
     }
     const model = buildShip(type);
     model.group.scale.setScalar(SWAP_FROM);
@@ -227,13 +258,15 @@ export class ShipBay {
     this.roller.position.z = Math.sin(time * 1.15) * 1.4;
     const pulse = 0.5 + 0.5 * Math.sin(time * 2.2);
     this.engineLight.intensity = ENGINE_LIGHT * (0.85 + 0.15 * pulse);
-    const model = this.model;
-    if (!model) return;
+    const group = this.custom?.group ?? this.model?.group;
+    if (!group) return;
+    const flames = this.custom?.flames ?? this.model?.flames ?? [];
     const progress = Math.min((time - this.swapAt) / SWAP_SECONDS, 1);
     const eased = 1 - Math.pow(1 - progress, 3);
-    model.group.scale.setScalar(SWAP_FROM + (SHIP_SCALE - SWAP_FROM) * eased);
-    for (let i = 0; i < model.flames.length; i++) {
-      const flame = model.flames[i];
+    group.scale.setScalar(SWAP_FROM + (SHIP_SCALE - SWAP_FROM) * eased);
+    for (const pivot of this.custom?.turrets ?? []) pivot.rotation.z *= 0.98;
+    for (let i = 0; i < flames.length; i++) {
+      const flame = flames[i];
       const flicker = 0.5 + 0.5 * Math.sin(time * 9.3 + i * 1.7) * Math.sin(time * 4.1);
       const scale = FLAME_MIN + (FLAME_MAX - FLAME_MIN) * flicker;
       flame.scale.set(0.9 + flicker * 0.2, scale, 0.9 + flicker * 0.2);

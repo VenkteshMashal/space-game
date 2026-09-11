@@ -4,16 +4,16 @@ import { rockyTexture } from './textures';
 import { randomSeed } from './physics';
 import type { ShipClass } from './physics';
 
-const armor = new THREE.MeshStandardMaterial({ color: '#bac4c3', roughness: 0.64, metalness: 0.55 });
-const lightArmor = new THREE.MeshStandardMaterial({ color: '#e2e3d8', roughness: 0.52, metalness: 0.4 });
-const dark = new THREE.MeshStandardMaterial({ color: '#202e38', roughness: 0.7, metalness: 0.85 });
-const metal = new THREE.MeshStandardMaterial({ color: '#667681', roughness: 0.5, metalness: 0.86 });
-const copper = new THREE.MeshStandardMaterial({ color: '#c88755', roughness: 0.65, metalness: 0.6 });
-const black = new THREE.MeshStandardMaterial({ color: '#0c141a', roughness: 0.7, metalness: 0.5 });
-const glass = new THREE.MeshStandardMaterial({ color: '#376c7c', roughness: 0.25, metalness: 0.7, emissive: '#306675', emissiveIntensity: 0.6 });
+export const armor = new THREE.MeshStandardMaterial({ color: '#bac4c3', roughness: 0.64, metalness: 0.55 });
+export const lightArmor = new THREE.MeshStandardMaterial({ color: '#e2e3d8', roughness: 0.52, metalness: 0.4 });
+export const dark = new THREE.MeshStandardMaterial({ color: '#202e38', roughness: 0.7, metalness: 0.85 });
+export const metal = new THREE.MeshStandardMaterial({ color: '#667681', roughness: 0.5, metalness: 0.86 });
+export const copper = new THREE.MeshStandardMaterial({ color: '#c88755', roughness: 0.65, metalness: 0.6 });
+export const black = new THREE.MeshStandardMaterial({ color: '#0c141a', roughness: 0.7, metalness: 0.5 });
+export const glass = new THREE.MeshStandardMaterial({ color: '#376c7c', roughness: 0.25, metalness: 0.7, emissive: '#306675', emissiveIntensity: 0.6 });
 let asteroidMaterial: THREE.MeshStandardMaterial | undefined;
 
-function box(parent: THREE.Object3D, material: THREE.Material, size: number[], pos: number[], rotation = 0) {
+export function box(parent: THREE.Object3D, material: THREE.Material, size: number[], pos: number[], rotation = 0) {
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(size[0], size[1], size[2]), material);
   mesh.position.set(pos[0], pos[1], pos[2]);
   mesh.rotation.z = rotation;
@@ -23,7 +23,7 @@ function box(parent: THREE.Object3D, material: THREE.Material, size: number[], p
   return mesh;
 }
 
-function cylinder(parent: THREE.Object3D, material: THREE.Material, top: number, bottom: number, height: number, pos: number[], segments = 12) {
+export function cylinder(parent: THREE.Object3D, material: THREE.Material, top: number, bottom: number, height: number, pos: number[], segments = 12) {
   const mesh = new THREE.Mesh(new THREE.CylinderGeometry(top, bottom, height, segments), material);
   mesh.position.set(pos[0], pos[1], pos[2]);
   mesh.castShadow = true;
@@ -31,7 +31,7 @@ function cylinder(parent: THREE.Object3D, material: THREE.Material, top: number,
   return mesh;
 }
 
-function hull(parent: THREE.Object3D, width: number, length: number, depth: number, material: THREE.Material, x = 0, y = 0, z = 0) {
+export function hull(parent: THREE.Object3D, width: number, length: number, depth: number, material: THREE.Material, x = 0, y = 0, z = 0) {
   const shape = new THREE.Shape();
   shape.moveTo(-width * 0.34, -length / 2);
   shape.lineTo(-width / 2, -length * 0.3);
@@ -51,7 +51,7 @@ function hull(parent: THREE.Object3D, width: number, length: number, depth: numb
   return mesh;
 }
 
-function stencil(text: string, width = 256, height = 64, color = '#192b32') {
+export function stencil(text: string, width = 256, height = 64, color = '#192b32') {
   const canvas = document.createElement('canvas');
   canvas.width = width; canvas.height = height;
   const ctx = canvas.getContext('2d')!;
@@ -216,9 +216,9 @@ export function disposeObject(object: THREE.Object3D) {
   object.removeFromParent();
 }
 
-const beaconLampMaterial = new THREE.MeshBasicMaterial({ color: '#dce6e8' });
-const beaconHaloMaterial = new THREE.MeshBasicMaterial({ color: '#83b9b5', transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
-const warmLampMaterial = new THREE.MeshBasicMaterial({ color: '#efb879' });
+export const beaconLampMaterial = new THREE.MeshBasicMaterial({ color: '#dce6e8' });
+export const beaconHaloMaterial = new THREE.MeshBasicMaterial({ color: '#83b9b5', transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+export const warmLampMaterial = new THREE.MeshBasicMaterial({ color: '#efb879' });
 const scorch = new THREE.MeshStandardMaterial({ color: '#181512', roughness: 0.94, metalness: 0.4 });
 const rust = new THREE.MeshStandardMaterial({ color: '#5f4132', roughness: 0.92, metalness: 0.45 });
 
@@ -268,4 +268,162 @@ export function buildDerelict(): DerelictModel {
   debris.push(box(group, lightArmor, [16, 24, 1.5], [26, -34, 3], 0.5));
   debris.push(box(group, armor, [14, 20, 1.4], [-32, -16, 4], -0.8));
   return { group, lamp, debris };
+}
+
+export const oreShell = new THREE.MeshStandardMaterial({ color: '#6a6258', roughness: 0.95, metalness: 0.12 });
+export const oreVein = new THREE.MeshBasicMaterial({ color: '#efb879' });
+
+/** One shared low-poly chunk geometry, instanced by the scene. Ore is decoration around a number. */
+export function oreGeometry() {
+  const geometry = new THREE.IcosahedronGeometry(7, 0);
+  const position = geometry.attributes.position;
+  const p = new THREE.Vector3();
+  for (let i = 0; i < position.count; i++) {
+    p.fromBufferAttribute(position, i);
+    p.multiplyScalar(0.72 + ((Math.sin(i * 12.9898) * 43758.5453) % 1 + 1) % 1 * 0.5);
+    position.setXYZ(i, p.x, p.y, p.z * 0.7);
+  }
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+export function buildOre() {
+  const group = new THREE.Group();
+  const shell = new THREE.Mesh(oreGeometry(), oreShell);
+  shell.castShadow = true;
+  group.add(shell);
+  const vein = new THREE.Mesh(new THREE.IcosahedronGeometry(7.6, 0), oreVein);   // pokes through the crust's low spots so the ore reads as ore
+  group.add(vein);   // the glowing core reads at 1.4x zoom where the rock silhouette does not
+  return group;
+}
+
+/** A traversing barrel assembly. `pivot.rotation.z` is driven from Mount.bearing each frame. */
+export function buildGunMount(weapon: 'ac20' | 'ac70' | 'gauss' | 'cutter' | 'swarm'): { group: THREE.Group; pivot: THREE.Group } {
+  const group = new THREE.Group();
+  const pivot = new THREE.Group();
+  cylinder(group, dark, 3.4, 4.2, 3, [0, 0, 0], 10);           // barbette
+  if (weapon === 'ac20') {
+    for (const side of [-1, 1]) {
+      const barrel = cylinder(pivot, metal, 0.7, 0.9, 13, [side * 1.5, 6, 1.6], 8);
+      barrel.rotation.x = Math.PI / 2;
+    }
+    box(pivot, armor, [6.4, 6, 3.4], [0, 1, 1.6]);
+  } else if (weapon === 'ac70') {
+    const barrel = cylinder(pivot, metal, 1.9, 2.4, 21, [0, 9, 2], 10);
+    barrel.rotation.x = Math.PI / 2;
+    cylinder(pivot, dark, 2.9, 2.9, 3, [0, 17, 2], 10).rotation.x = Math.PI / 2;   // muzzle brake
+    box(pivot, armor, [9, 9, 4.6], [0, 0, 2]);
+  } else if (weapon === 'gauss') {
+    const rail = box(pivot, dark, [3.2, 34, 3.2], [0, 15, 2.4]);
+    for (let i = 0; i < 7; i++) box(rail, copper, [4.6, 1.4, 4.6], [0, -14 + i * 4.6, 0]);
+    box(pivot, metal, [8, 8, 5], [0, -2, 2.4]);
+  } else if (weapon === 'cutter') {
+    const head = cylinder(pivot, metal, 2.6, 3.4, 7, [0, 5, 2], 8);
+    head.rotation.x = Math.PI / 2;
+    const lens = new THREE.Mesh(new THREE.CircleGeometry(2.3, 12), new THREE.MeshBasicMaterial({ color: '#ff9d6b' }));
+    lens.position.set(0, 8.6, 2); lens.rotation.x = -Math.PI / 2; pivot.add(lens);
+  } else {
+    for (const side of [-1, 1]) for (let i = 0; i < 3; i++) {
+      box(pivot, i % 2 ? armor : dark, [3, 9, 3], [side * 3.4, 2, 1 + i * 3.2]);
+    }
+  }
+  group.add(pivot);
+  return { group, pivot };
+}
+
+const hostilePlate = new THREE.MeshStandardMaterial({ color: '#2c2a33', roughness: 0.72, metalness: 0.7 });
+const hostileTrim = new THREE.MeshStandardMaterial({ color: '#6d3b38', roughness: 0.6, metalness: 0.75 });
+const hostileLamp = new THREE.MeshBasicMaterial({ color: '#df8277' });
+
+export type HostileModel = { group: THREE.Group; flames: THREE.Mesh[]; lamp: THREE.Mesh; turrets: THREE.Group[] };
+
+export function buildRaider(kind: 'raider' | 'interceptor'): HostileModel {
+  const group = new THREE.Group();
+  const flames: THREE.Mesh[] = [];
+  const turrets: THREE.Group[] = [];
+  const wide = kind === 'interceptor' ? 0.74 : 1;
+
+  // A forward-swept dart: the mirror of the player's blunt, working corvette.
+  const shape = new THREE.Shape();
+  shape.moveTo(0, 42); shape.lineTo(14 * wide, 4); shape.lineTo(21 * wide, -18);
+  shape.lineTo(9 * wide, -30); shape.lineTo(-9 * wide, -30); shape.lineTo(-21 * wide, -18);
+  shape.lineTo(-14 * wide, 4); shape.closePath();
+  const body = new THREE.Mesh(new THREE.ExtrudeGeometry(shape, { depth: 11, bevelEnabled: true, bevelSize: 1.2, bevelThickness: 1, bevelSegments: 1 }), hostilePlate);
+  body.position.z = -5.5; body.castShadow = true; group.add(body);
+
+  box(group, hostileTrim, [7 * wide, 26, 4], [0, 6, 6]);
+  box(group, black, [4.5 * wide, 2, 0.6], [0, 22, 8.4]);                 // canopy slit
+  for (const side of [-1, 1]) {
+    box(group, hostilePlate, [3, 34, 5], [side * 17 * wide, -6, 1], side * 0.22);
+    box(group, hostileTrim, [8, 3, 1.4], [side * 13 * wide, 12, 6]);
+    const mount = buildGunMount('ac20');
+    mount.group.position.set(side * 11 * wide, 9, 7);
+    group.add(mount.group); turrets.push(mount.pivot);
+    cylinder(group, metal, 3.4, 5, 10, [side * 8 * wide, -33, 0]);       // engine bell
+    const flame = new THREE.Mesh(new THREE.ConeGeometry(4, 30, 14, 1, true), new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+      vertexShader: 'varying vec2 vUv; void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
+      fragmentShader: 'varying vec2 vUv; void main(){float a=pow(1.-vUv.y,1.5);vec3 c=mix(vec3(.72,.22,.18),vec3(1.,.84,.6),a);gl_FragColor=vec4(c,a*.8);}',
+    }));
+    flame.rotation.z = Math.PI;
+    flame.position.set(side * 8 * wide, -52, 0);
+    flame.visible = false; group.add(flame); flames.push(flame);
+  }
+  const lamp = new THREE.Mesh(new THREE.SphereGeometry(1.5, 8, 8), hostileLamp);
+  lamp.position.set(0, 38, 5); group.add(lamp);
+  return { group, flames, lamp, turrets };
+}
+
+export function buildTurret(): HostileModel {
+  const group = new THREE.Group();
+  const turrets: THREE.Group[] = [];
+  cylinder(group, dark, 15, 19, 6, [0, 0, -4], 10);                  // anchored base
+  for (let i = 0; i < 6; i++) {
+    const a = i / 6 * Math.PI * 2;
+    box(group, metal, [3.4, 18, 2.4], [Math.cos(a) * 15, Math.sin(a) * 15, -4], -a);
+  }
+  cylinder(group, hostilePlate, 9, 12, 9, [0, 0, 3], 10);
+  const head = buildGunMount('ac70');
+  head.group.position.set(0, 0, 9);
+  group.add(head.group); turrets.push(head.pivot);
+  const lamp = new THREE.Mesh(new THREE.SphereGeometry(1.6, 8, 8), hostileLamp);
+  lamp.position.set(0, 0, 15); group.add(lamp);
+  return { group, flames: [], lamp, turrets };
+}
+
+export function buildMine(): HostileModel {
+  const group = new THREE.Group();
+  const core = new THREE.Mesh(new THREE.IcosahedronGeometry(7, 1), hostilePlate);
+  core.castShadow = true; group.add(core);
+  // Spikes on the icosahedron's own vertex directions: the shape supplies its own layout.
+  const directions = new THREE.IcosahedronGeometry(1, 0).attributes.position;
+  const seen = new Set<string>();
+  const v = new THREE.Vector3();
+  for (let i = 0; i < directions.count; i++) {
+    v.fromBufferAttribute(directions, i).normalize();
+    const key = v.toArray().map(n => n.toFixed(2)).join();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const spike = new THREE.Mesh(new THREE.ConeGeometry(1.1, 6, 6), hostileTrim);
+    spike.position.copy(v).multiplyScalar(9);
+    spike.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), v);
+    spike.castShadow = true;
+    group.add(spike);
+  }
+  const lamp = new THREE.Mesh(new THREE.SphereGeometry(2.1, 10, 10), hostileLamp);
+  lamp.position.set(0, 0, 8); group.add(lamp);
+  return { group, flames: [], lamp, turrets: [] };
+}
+
+const rockCache = new Map<string, THREE.BufferGeometry>();
+
+export function cachedAsteroid(radius: number, seed: number): THREE.Mesh {
+  // 12 radius buckets x 16 seeds = at most 192 distinct geometries, and they all get reused.
+  const bucket = Math.max(1, Math.round(radius / 8));
+  const key = `${bucket}:${seed % 16}`;
+  let geometry = rockCache.get(key);
+  if (!geometry) { geometry = buildAsteroid(bucket * 8, seed % 16).geometry; rockCache.set(key, geometry); }
+  const mesh = new THREE.Mesh(geometry, asteroidMaterial!);
+  mesh.scale.setScalar(radius / (bucket * 8));   // exact radius from a shared shape
+  return mesh;
 }

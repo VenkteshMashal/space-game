@@ -1,6 +1,6 @@
 import type { Vec2 } from './physics';
 
-export type RadarKind = 'cargo' | 'station' | 'beacon' | 'derelict';
+export type RadarKind = 'cargo' | 'station' | 'beacon' | 'derelict' | 'hostile' | 'ore' | 'ally';
 export type RadarContact = {
   id: string;
   kind: RadarKind;
@@ -8,6 +8,7 @@ export type RadarContact = {
   known: boolean;      // false = unresolved contact, drawn dimmed
   collected?: boolean; // recovered archive: stop drawing it
   selected: boolean;
+  angle?: number;      // hostile heading, radians
 };
 export type RadarRock = { x: number; y: number; radius: number };
 export type RadarFrame = {
@@ -46,6 +47,7 @@ const BRACKET = 'rgba(131,185,181,.9)';
 const LEADER = 'rgba(131,185,181,.35)';
 const LABEL = '#7b93a1';
 const CARDINAL = '#54697a';
+const HOSTILE_CORAL = '#ff8f72';
 
 const FONT_LABEL = "9px 'Barlow Condensed', sans-serif";
 const FONT_TICK = "8px 'Barlow Condensed', sans-serif";
@@ -357,6 +359,40 @@ export class Radar {
           ctx.beginPath();
           ctx.arc(x, y, 1.6, 0, TAU);
           ctx.stroke();
+          break;
+        }
+        case 'hostile': {
+          // A coral dart aimed along its heading: screen Y is inverted, so the nose is (-sin, -cos).
+          const angle = contact.angle ?? 0;
+          const nx = -Math.sin(angle), ny = -Math.cos(angle);
+          ctx.globalAlpha = Math.max(alpha, 0.75);
+          ctx.fillStyle = HOSTILE_CORAL;
+          ctx.beginPath();
+          ctx.moveTo(x + nx * 4.6, y + ny * 4.6);
+          ctx.lineTo(x - nx * 2.6 - ny * 3, y - ny * 2.6 + nx * 3);
+          ctx.lineTo(x - nx * 2.6 + ny * 3, y - ny * 2.6 - nx * 3);
+          ctx.closePath();
+          ctx.fill();
+          break;
+        }
+        case 'ally': {
+          // A friendly chevron in sea glass: the player is escorting this one, not hunting it.
+          const angle = contact.angle ?? 0;
+          const nx = -Math.sin(angle), ny = -Math.cos(angle);
+          ctx.globalAlpha = Math.max(alpha, 0.85);
+          ctx.strokeStyle = SEA_GLASS;
+          ctx.lineWidth = 1.4;
+          ctx.beginPath();
+          ctx.moveTo(x - nx * 3.4 - ny * 3.6, y - ny * 3.4 + nx * 3.6);
+          ctx.lineTo(x + nx * 4.6, y + ny * 4.6);
+          ctx.lineTo(x - nx * 3.4 + ny * 3.6, y - ny * 3.4 - nx * 3.6);
+          ctx.stroke();
+          break;
+        }
+        case 'ore': {
+          ctx.globalAlpha = 0.9;
+          ctx.fillStyle = AMBER;
+          ctx.fillRect(x - 1, y - 1, 2.2, 2.2);
           break;
         }
       }

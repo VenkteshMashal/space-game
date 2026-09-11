@@ -1,0 +1,320 @@
+import { bodyAt, clamp, createShip, resolveCollision, shipBox, stepShip } from './physics';
+import { pointInBox } from './collision';
+import type { FlightInput, Obstacle, ShipClass, ShipState, SolidBody, SpatialGrid, Vec2 } from './physics';
+
+// Reused between rounds so stepping the whole pool allocates nothing but the returned hit list.
+const roundNearby: Obstacle[] = [];
+
+export type WeaponKind = 'kinetic' | 'beam' | 'missile';
+export type WeaponSpec = {
+  id: string; name: string; kind: WeaponKind;
+  damage: number;   // per hit; per second for a beam
+  rof: number;      // shots per second; beams ignore it
+  speed: number;    // m/s at the muzzle
+  range: number;    // metres before the round expires
+  spread: number;   // radians, half-angle
+  heat: number;     // drive heat added per shot (per second for a beam)
+  draw: number;     // propellant per shot (per second for a beam)
+  arc: number;      // radians of traverse off the hull axis; 0 = fixed forward
+  rockBonus: number;// damage multiplier vs asteroids — mining tools are poor anti-ship guns
+  mass: number; cost: number;
+};
+
+export const WEAPONS: Record<string, WeaponSpec> = {
+  ac20:   { id: 'ac20',   name: 'AC-20 autocannon', kind: 'kinetic', damage: 14,  rof: 5.5,  speed: 620,  range: 900,  spread: 0.018, heat: 0.006, draw: 1.4, arc: 0.38, rockBonus: 1,   mass: 1400, cost: 900 },
+  ac70:   { id: 'ac70',   name: 'AC-70 breaker',    kind: 'kinetic', damage: 58,  rof: 1.1,  speed: 480,  range: 1150, spread: 0.006, heat: 0.030, draw: 6.0, arc: 0.22, rockBonus: 2.4, mass: 3900, cost: 2600 },
+  gauss:  { id: 'gauss',  name: 'Gauss lance',      kind: 'kinetic', damage: 130, rof: 0.42, speed: 1400, range: 2200, spread: 0.001, heat: 0.110, draw: 14,  arc: 0.08, rockBonus: 1.6, mass: 6200, cost: 7400 },
+  cutter: { id: 'cutter', name: 'Mining cutter',    kind: 'beam',    damage: 46,  rof: 0,    speed: 0,    range: 210,  spread: 0,     heat: 0.340, draw: 9,   arc: 0.50, rockBonus: 3.2, mass: 2100, cost: 1800 },
+  swarm:  { id: 'swarm',  name: 'Swarm rack',       kind: 'missile', damage: 85,  rof: 0.7,  speed: 240,  range: 1800, spread: 0.120, heat: 0.020, draw: 4,   arc: 1.20, rockBonus: 0.6, mass: 2800, cost: 4100 },
+};
+
+// ponytail: fixed ring buffer, oldest round is dropped on wrap. Grow MAX_ROUNDS if a build ever out-fires it.
+export const MAX_ROUNDS = 640;
+export type Faction = 0 | 1;   // 0 player, 1 hostile
+
+export class Rounds {
+  readonly x = new Float32Array(MAX_ROUNDS);
+  readonly y = new Float32Array(MAX_ROUNDS);
+  readonly vx = new Float32Array(MAX_ROUNDS);
+  readonly vy = new Float32Array(MAX_ROUNDS);
+  readonly life = new Float32Array(MAX_ROUNDS);
+  readonly damage = new Float32Array(MAX_ROUNDS);
+  readonly bonus = new Float32Array(MAX_ROUNDS);
+  readonly faction = new Uint8Array(MAX_ROUNDS);
+  private cursor = 0;
+
+  spawn(x: number, y: number, vx: number, vy: number, spec: WeaponSpec, faction: Faction) {
+    const i = this.cursor;
+    this.cursor = (this.cursor + 1) % MAX_ROUNDS;
+    this.x[i] = x; this.y[i] = y; this.vx[i] = vx; this.vy[i] = vy;
+    this.life[i] = spec.range / spec.speed;
+    this.damage[i] = spec.damage; this.bonus[i] = spec.rockBonus; this.faction[i] = faction;
+  }
+}
+
+export type Mount = { spec: WeaponSpec; lx: number; ly: number; cooldown: number; bearing: number };
+
+/** The Kestrel model already carries point-defence housings at (+/-10 * wide, 9, 15). Mount there. */
+export const STOCK_MOUNTS: Record<ShipClass, { weapon: string; lx: number; ly: number }[]> = {
+  kestrel: [{ weapon: 'ac20', lx: -10, ly: 9 }, { weapon: 'ac20', lx: 10, ly: 9 }],
+  mule:    [{ weapon: 'ac70', lx: 0, ly: 16 }, { weapon: 'cutter', lx: 0, ly: -4 }],
+  needle:  [{ weapon: 'ac20', lx: -7, ly: 14 }, { weapon: 'ac20', lx: 7, ly: 14 }, { weapon: 'gauss', lx: 0, ly: 6 }],
+};
+
+export const wrapAngle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
+
+/** Advances cooldowns and fires held mounts. Runs inside the fixed step. */
+export function fireMounts(
+  mounts: Mount[], state: ShipState, aim: Vec2, trigger: boolean, rounds: Rounds,
+  faction: Faction, scale: number, dt: number,
+  onShot?: (mx: number, my: number, angle: number, spec: WeaponSpec) => void,
+) {
+  const cos = Math.cos(state.angle), sin = Math.sin(state.angle);
+  // stepShip's forward is (-sin, cos): the hull axis is angle + PI/2 in world bearing terms.
+  const hullBearing = state.angle + Math.PI / 2;
+  for (const mount of mounts) {
+    mount.cooldown = Math.max(0, mount.cooldown - dt);
+    const mx = state.position.x + (mount.lx * cos - mount.ly * sin) * scale;
+    const my = state.position.y + (mount.lx * sin + mount.ly * cos) * scale;
+    const wanted = Math.atan2(aim.y - my, aim.x - mx);
+    const offset = clamp(wrapAngle(wanted - hullBearing), -mount.spec.arc, mount.spec.arc);
+    mount.bearing = offset;                       // the model reads this to swing the barrel
+    if (mount.spec.kind === 'beam') continue;     // beams are continuous, see 1.8
+    if (mount.spec.kind === 'missile') continue;  // missiles arrive with hostiles in Phase 2; an unguided rack buys nothing yet
+    if (!trigger || mount.cooldown > 0) continue;
+    if (state.fuel < mount.spec.draw || state.heat > 0.98) continue;
+
+    const angle = hullBearing + offset + (Math.random() - 0.5) * 2 * mount.spec.spread;
+    // Rounds inherit ship velocity. A Newtonian sim that skips this feels wrong the moment you strafe.
+    rounds.spawn(mx, my,
+      state.velocity.x + Math.cos(angle) * mount.spec.speed,
+      state.velocity.y + Math.sin(angle) * mount.spec.speed,
+      mount.spec, faction);
+    mount.cooldown = 1 / mount.spec.rof;
+    state.fuel = Math.max(0, state.fuel - mount.spec.draw);
+    state.heat = clamp(state.heat + mount.spec.heat, 0, 1);
+    onShot?.(mx, my, angle, mount.spec);
+  }
+}
+
+export type Hit =
+  | { kind: 'rock'; rock: Obstacle; x: number; y: number; damage: number; destroyed: boolean }
+  | { kind: 'ship'; target: ShipState; x: number; y: number; damage: number }
+  | { kind: 'body'; x: number; y: number }
+  | { kind: 'expire'; x: number; y: number };
+
+export function stepRounds(rounds: Rounds, grid: SpatialGrid, targets: { state: ShipState; faction: Faction }[], dt: number, bodies: readonly SolidBody[] = []): Hit[] {
+  const hits: Hit[] = [];
+  for (let i = 0; i < MAX_ROUNDS; i++) {
+    if (rounds.life[i] <= 0) continue;
+    const vx = rounds.vx[i], vy = rounds.vy[i];
+    rounds.life[i] -= dt;
+    if (rounds.life[i] <= 0) {
+      // Range exhausted: the round coasts to where it died and expires without resolving a hit.
+      rounds.x[i] += vx * dt; rounds.y[i] += vy * dt;
+      hits.push({ kind: 'expire', x: rounds.x[i], y: rounds.y[i] });
+      continue;
+    }
+
+    // ponytail: point test with a 2x substep above 700 m/s. Swept test only if a faster weapon lands.
+    const substeps = vx * vx + vy * vy > 490000 ? 2 : 1;
+    const step = dt / substeps;
+    let struck = false;
+    let px = rounds.x[i], py = rounds.y[i];
+    for (let s = 1; s <= substeps; s++) {
+      // Midpoint then endpoint: a 1400 m/s round covers ~12 m per step, enough to jump a 9 m rock whole.
+      const nx = rounds.x[i] + vx * step * s;
+      const ny = rounds.y[i] + vy * step * s;
+
+      for (const target of targets) {
+        if (target.faction === rounds.faction[i] || target.state.hull <= 0) continue;
+        if (!pointInBox(shipBox(target.state), nx, ny)) continue;
+        const damage = rounds.damage[i];
+        target.state.hull = Math.max(0, target.state.hull - damage);
+        hits.push({ kind: 'ship', target: target.state, x: nx, y: ny, damage });
+        struck = true; break;
+      }
+      if (!struck && bodies.length && bodyAt(nx, ny)) {
+        hits.push({ kind: 'body', x: nx, y: ny });
+        struck = true;
+      }
+      if (!struck) {
+        grid.near(nx, ny, roundNearby);
+        for (const rock of roundNearby) {
+          if (rock.z !== 0 || rock.hp <= 0) continue;
+          if (Math.hypot(nx - rock.x, ny - rock.y) > rock.radius * 0.9) continue;
+          const damage = rounds.damage[i] * rounds.bonus[i];
+          rock.hp -= damage;
+          hits.push({ kind: 'rock', rock, x: nx, y: ny, damage, destroyed: rock.hp <= 0 });
+          struck = true; break;
+        }
+      }
+
+      px = nx; py = ny;
+      if (struck) break;
+    }
+    rounds.x[i] = px; rounds.y[i] = py;
+    if (struck) rounds.life[i] = 0;
+  }
+  return hits;
+}
+
+export type BeamHit = { mount: Mount; x: number; y: number; ex: number; ey: number; rock?: Obstacle; destroyed: boolean };
+
+export function stepBeams(mounts: Mount[], state: ShipState, grid: SpatialGrid, trigger: boolean, scale: number, dt: number): BeamHit[] {
+  const out: BeamHit[] = [];
+  const nearby: Obstacle[] = [];
+  const cos = Math.cos(state.angle), sin = Math.sin(state.angle);
+  const hullBearing = state.angle + Math.PI / 2;
+  for (const mount of mounts) {
+    if (mount.spec.kind !== 'beam' || !trigger) continue;
+    if (state.fuel < mount.spec.draw * dt || state.heat > 0.99) continue;
+    const mx = state.position.x + (mount.lx * cos - mount.ly * sin) * scale;
+    const my = state.position.y + (mount.lx * sin + mount.ly * cos) * scale;
+    const angle = hullBearing + mount.bearing;
+    const dx = Math.cos(angle), dy = Math.sin(angle);
+
+    // 12 samples over a 210 m beam is a 17 m step — finer than the smallest rock we let survive.
+    let hitRock: Obstacle | undefined, ex = mx + dx * mount.spec.range, ey = my + dy * mount.spec.range;
+    for (let s = 1; s <= 12 && !hitRock; s++) {
+      const px = mx + dx * mount.spec.range * (s / 12), py = my + dy * mount.spec.range * (s / 12);
+      grid.near(px, py, nearby);
+      for (const rock of nearby) {
+        if (rock.z !== 0 || rock.hp <= 0) continue;
+        if (Math.hypot(px - rock.x, py - rock.y) > rock.radius * 0.95) continue;
+        hitRock = rock; ex = px; ey = py; break;
+      }
+    }
+    state.fuel = Math.max(0, state.fuel - mount.spec.draw * dt);
+    state.heat = clamp(state.heat + mount.spec.heat * dt, 0, 1);
+    let destroyed = false;
+    if (hitRock) {
+      hitRock.hp -= mount.spec.damage * mount.spec.rockBonus * dt;
+      destroyed = hitRock.hp <= 0;
+    }
+    out.push({ mount, x: mx, y: my, ex, ey, rock: hitRock, destroyed });
+  }
+  return out;
+}
+
+export type HostileKind = 'raider' | 'interceptor' | 'turret' | 'mine';
+export type AIMode = 'patrol' | 'attack' | 'flee';
+
+export type Hostile = {
+  id: number; kind: HostileKind;
+  state: ShipState;
+  mounts: Mount[];
+  mode: AIMode;
+  home: Vec2;          // patrol anchor
+  alertRange: number;
+  preferred: number;   // the range it tries to hold
+  reaction: number;    // seconds of decision lag; keeps it from being a perfect aimbot
+  bounty: number;
+  cooldown: number;
+  /** Simulation seconds alive: the sim never reads the wall clock, so replays stay identical. */
+  clock: number;
+};
+
+export const HOSTILES: Record<HostileKind, { ship: ShipClass; hull: number; weapons: string[]; alert: number; preferred: number; reaction: number; bounty: number }> = {
+  raider:      { ship: 'kestrel', hull: 90,  weapons: ['ac20', 'ac20'], alert: 900,  preferred: 380, reaction: 0.34, bounty: 1400 },
+  interceptor: { ship: 'needle',  hull: 55,  weapons: ['ac20'],         alert: 1200, preferred: 260, reaction: 0.20, bounty: 1900 },
+  turret:      { ship: 'mule',    hull: 140, weapons: ['ac70'],         alert: 700,  preferred: 0,   reaction: 0.45, bounty: 1100 },
+  mine:        { ship: 'needle',  hull: 20,  weapons: [],               alert: 150,  preferred: 0,   reaction: 0,    bounty: 300 },
+};
+
+/** One Mount per catalogue weapon, mirrored down the hull (single-weapon kinds sit on the axis). */
+function hostileMounts(weapons: string[]): Mount[] {
+  const mounts: Mount[] = [];
+  for (let i = 0; i < weapons.length; i++) {
+    const lx = weapons.length === 1 ? 0 : (i % 2 === 0 ? -10 : 10);
+    mounts.push({ spec: WEAPONS[weapons[i]], lx, ly: 9, cooldown: 0, bearing: 0 });
+  }
+  return mounts;
+}
+
+/** A hostile built from the catalogue. Mass, thrust, fuel and torque come from its stock ship class. */
+export function createHostile(id: number, kind: HostileKind, position: Vec2): Hostile {
+  const entry = HOSTILES[kind];
+  const state = createShip(entry.ship);
+  state.position.x = position.x; state.position.y = position.y;
+  state.angle = Math.random() * Math.PI * 2;
+  state.hull = entry.hull;   // spec.hull is the shared stock const — the kind's own value lives here
+  return {
+    id, kind, state, mounts: hostileMounts(entry.weapons),
+    mode: 'patrol', home: { x: position.x, y: position.y },
+    alertRange: entry.alert, preferred: entry.preferred, reaction: entry.reaction, bounty: entry.bounty,
+    cooldown: 0, clock: 0,
+  };
+}
+
+/** Where to shoot so a round at `speed` meets a target moving at `tv`. One iteration is plenty at these ranges. */
+function leadPoint(from: Vec2, target: Vec2, tv: Vec2, speed: number): Vec2 {
+  const range = Math.hypot(target.x - from.x, target.y - from.y);
+  const t = range / speed;
+  return { x: target.x + tv.x * t, y: target.y + tv.y * t };
+}
+
+/** Hostiles shoot the nearest thing on the player's side, which is what makes an escort dangerous. */
+function nearestTarget(from: Vec2, targets: readonly ShipState[]): ShipState | undefined {
+  let best: ShipState | undefined;
+  let bestRange = Infinity;
+  for (const target of targets) {
+    if (target.hull <= 0) continue;
+    const range = Math.hypot(target.position.x - from.x, target.position.y - from.y);
+    if (range < bestRange) { bestRange = range; best = target; }
+  }
+  return best;
+}
+
+export function stepHostile(h: Hostile, targets: readonly ShipState[], rounds: Rounds, grid: SpatialGrid, dt: number): void {
+  h.clock += dt;
+  if (h.state.hull <= 0) return;
+  const player = nearestTarget(h.state.position, targets);
+  if (!player) return;
+  const toPlayer = { x: player.position.x - h.state.position.x, y: player.position.y - h.state.position.y };
+  const range = Math.hypot(toPlayer.x, toPlayer.y);
+  const hullRatio = h.state.hull / HOSTILES[h.kind].hull;
+
+  h.cooldown -= dt;
+  if (h.cooldown <= 0) {                    // decisions are made at ~3 Hz, not 120 Hz
+    h.cooldown = h.reaction;
+    if (hullRatio < 0.28) h.mode = 'flee';
+    else if (range < h.alertRange && player.hull > 0) h.mode = 'attack';
+    else if (h.mode !== 'flee') h.mode = 'patrol';
+  }
+
+  const spec = h.mounts[0]?.spec;
+  const aim = spec ? leadPoint(h.state.position, player.position, player.velocity, spec.speed) : player.position;
+  const wantBearing = h.mode === 'flee'
+    ? Math.atan2(-toPlayer.y, -toPlayer.x)
+    : Math.atan2(aim.y - h.state.position.y, aim.x - h.state.position.x);
+
+  // stepShip's hull axis is angle + PI/2; turn toward the wanted bearing with a damped proportional law.
+  const error = wrapAngle(wantBearing - (h.state.angle + Math.PI / 2));
+  const turn = clamp(error * 2.4 - h.state.angularVelocity * 0.7, -1, 1);
+
+  let thrust = 0, strafe = 0;
+  // Turrets and mines never translate — their input stays zeroed before stepShip; they still rotate to track.
+  const mobile = h.kind !== 'turret' && h.kind !== 'mine';
+  if (mobile && h.preferred > 0 && h.mode !== 'patrol') {
+    const gap = range - h.preferred;
+    thrust = clamp(gap / 260, -0.28, 1) * (h.mode === 'flee' ? -1 : 1);
+    if (h.mode === 'flee') thrust = 1;                 // nose is already pointed away
+    // Orbit rather than sit still: a stationary target is no fun to fight and no threat to fly past.
+    else if (Math.abs(gap) < 140) strafe = Math.sin(h.id * 1.7 + h.clock / 2.6) > 0 ? 1 : -1;
+  } else if (mobile && h.mode === 'patrol' && h.preferred > 0) {
+    const drift = Math.hypot(h.home.x - h.state.position.x, h.home.y - h.state.position.y);
+    thrust = drift > 500 ? 0.35 : 0;
+  }
+
+  const aligned = Math.abs(error) < 0.16 && range < (spec?.range ?? 0) * 0.85;
+  const input: FlightInput = { thrust, turn, strafe, brake: h.mode === 'patrol' && thrust === 0, boost: false };
+  stepShip(h.state, input, dt);
+  grid.near(h.state.position.x, h.state.position.y, roundNearby);   // same scratch as the round loop
+  for (const rock of roundNearby) resolveCollision(h.state, rock);   // hostiles hit rocks too, and it shows
+  if (h.mounts.length) {
+    fireMounts(h.mounts, h.state, aim, h.mode === 'attack' && aligned, rounds, 1, 1.3, dt);
+  }
+}
+
+// ponytail: 3 Hz decisions and a proportional turn law. Behaviour trees only if a contract needs coordination.

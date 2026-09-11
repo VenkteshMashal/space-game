@@ -1,26 +1,50 @@
 import * as THREE from 'three';
-import { buildAsteroid, buildBeacon, buildCargo, buildDerelict, buildShip, buildStation, disposeObject } from './models';
-import type { ShipModel } from './models';
-import { ParticleField, RingWaves } from './effects';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { armor as armorMaterial, buildBeacon, buildCargo, buildDerelict, buildGunMount, buildMine, buildRaider, buildShip, buildStation, buildTurret, cachedAsteroid, disposeObject, lightArmor as lightArmorMaterial, oreGeometry, oreShell as oreMaterial, oreVein as oreVeinMaterial } from './models';
+import type { HostileModel, ShipModel } from './models';
+import type { BuiltShip } from './build';
+import { BeamPool, makeDissolveMaterial, ParticleField, RingWaves, ShieldFlash, TracerPool } from './effects';
 import { DERELICT, randomSeed, RELAY, SECTOR, STATION } from './physics';
-import type { Cargo, Obstacle, ShipClass, ShipState, Vec2 } from './physics';
+import type { Cargo, Obstacle, Ore, ShipClass, ShipState, Vec2 } from './physics';
+import { MAX_ROUNDS } from './combat';
+import type { Hostile, Mount, Rounds } from './combat';
 import { rockyTexture, spaceTexture } from './textures';
 
-const SHIP_SCALE = 1.3;
+export const SHIP_SCALE = 1.3;
 /** Half-height of the flight view at zoom 1, in metres. */
 const FLIGHT_HALF = 340;
 /** The flight camera sits up and back from the ship so the plane reads as a lit surface rather than a flat chart. */
 const TILT = { rise: -410, lift: 1100 };
 const SECTOR_WIDTH = SECTOR.maxX - SECTOR.minX;
 const SECTOR_HEIGHT = SECTOR.maxY - SECTOR.minY;
+const MAX_ORE_INSTANCES = 240;
+
+/** Scorched hull variants swapped in when integrity falls. Built once, shared by every damaged plate. */
+const scorchedArmor = new THREE.MeshStandardMaterial({ color: '#3a2f26', roughness: 0.97, metalness: 0.35 });
+const scorchedLight = new THREE.MeshStandardMaterial({ color: '#564a40', roughness: 0.99, metalness: 0.25 });
+const plateMaterial = new THREE.MeshStandardMaterial({ color: '#2a231d', roughness: 0.98, metalness: 0.4 });
+/** Dissolve lifetime in seconds; main.ts drives the uniform, this is the render-loop clock. */
+const DISSOLVE_SECONDS = 0.35;
+/** Hull integrity below which the wreck states appear. */
+const DAMAGE_THRESHOLD = 0.45;
 
 export type ViewMode = 'title' | 'flight' | 'map';
+
+export type BeamVisual = { x: number; y: number; ex: number; ey: number; hot: boolean };
 
 export type SceneFrame = {
   state: ShipState;
   cargos: Cargo[];
   target?: { id: string; position: Vec2 };
   scanning?: { position: Vec2; progress: number };
+  rounds?: Rounds;
+  beams?: BeamVisual[];
+  ore?: Ore[];
+  aim?: Vec2;
+  mounts?: Mount[];
+  hostiles?: Hostile[];
   dt: number;
   time: number;
 };
@@ -29,7 +53,9 @@ export class SpaceScene {
   renderer: THREE.WebGLRenderer;
   scene = new THREE.Scene();
   camera = new THREE.OrthographicCamera(-600, 600, 400, -400, 1, 6000);
-  ship: ShipModel;
+  ship: ShipModel | BuiltShip;
+  /** Custom builds carry their own turret pivots; stock ships get theirs from setGunMounts. */
+  private customTurrets: THREE.Group[] = [];
   mode: ViewMode = 'title';
   zoom = 1.35;
   mapZoom = 1;
@@ -40,7 +66,10 @@ export class SpaceScene {
   moon: THREE.Mesh;
   stars: THREE.Points;
   cargos: { cargo: Cargo; mesh: THREE.Group }[] = [];
-  rocks: { mesh: THREE.Mesh; planar: boolean }[] = [];
+  /** Rock meshes by obstacle id: identity survives fracture so a rock can be removed and its children added. */
+  rocks = new Map<number, THREE.Mesh>();
+  /** Hostile models by hostile id, driven from the frame each render. */
+  hostileModels = new Map<number, HostileModel>();
   station: THREE.Group;
   orbit = new THREE.Group();
   trajectory: THREE.Line;
@@ -71,7 +100,30 @@ export class SpaceScene {
   private shake = 0;
   private stationFlash = 0;
   private recovering: { mesh: THREE.Group; t: number }[] = [];
+  private tracers: TracerPool;
+  private beams: BeamPool;
+  private oreShell: THREE.InstancedMesh;
+  private oreVein: THREE.InstancedMesh;
+  private oreDummy = new THREE.Object3D();
+  private gunPivots: { root: THREE.Group; pivot: THREE.Group }[] = [];
+  private muzzleLight: THREE.PointLight;
+  private composer: EffectComposer;
+  private lowSpec = false;
+  private aimMarker: THREE.LineSegments;
+  private aimPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+  private raycaster = new THREE.Raycaster();
+  private ndc = new THREE.Vector2();
+  private aimHit = new THREE.Vector3();
   private reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  /** The shared solid asteroid material, captured so spawnRock can reset a recycled mesh. */
+  private rockBaseMaterial: THREE.Material | null = null;
+  /** Rocks currently burning away: each owns a cloned dissolve material disposed when the fade ends. */
+  private dissolving: { id: number; mesh: THREE.Mesh; material: THREE.Material; uniform: { value: number }; t: number }[] = [];
+  private shield: ShieldFlash;
+  /** Hull tiles swapped to scorched variants below the damage threshold, with their originals to restore. */
+  private scorchSwaps: { mesh: THREE.Mesh; original: THREE.Material }[] = [];
+  private damageBelow = false;
+  private damagePlate: THREE.Mesh;
 
   constructor(host: HTMLElement, obstacles: Obstacle[], cargos: Cargo[]) {
     this.host = host;
@@ -94,12 +146,7 @@ export class SpaceScene {
     this.moon = this.buildMoon(); this.scene.add(this.moon);
 
     this.ship = buildShip(); this.ship.group.scale.setScalar(SHIP_SCALE); this.scene.add(this.ship.group);
-    for (const obstacle of obstacles) {
-      const rock = buildAsteroid(obstacle.radius, obstacle.seed);
-      rock.position.set(obstacle.x, obstacle.y, obstacle.z);
-      rock.rotation.set(obstacle.seed, obstacle.seed * 0.4, obstacle.seed * 0.7);
-      this.rocks.push({ mesh: rock, planar: obstacle.z === 0 }); this.scene.add(rock);
-    }
+    for (const obstacle of obstacles) this.spawnRock(obstacle);
     cargos.forEach((cargo, i) => {
       const mesh = buildCargo(i); mesh.position.set(cargo.position.x, cargo.position.y, 0);
       this.cargos.push({ cargo, mesh }); this.scene.add(mesh);
@@ -151,6 +198,34 @@ export class SpaceScene {
     this.scanRing.visible = false; this.scene.add(this.scanRing);
     this.scanSweep = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(34, 0, 0)]), new THREE.LineBasicMaterial({ color: '#c8f0e6', transparent: true, opacity: 0.65 }));
     this.scanSweep.visible = false; this.scene.add(this.scanSweep);
+
+    this.tracers = new TracerPool(MAX_ROUNDS); this.scene.add(this.tracers.lines);
+    this.beams = new BeamPool(4); this.scene.add(this.beams.group);
+    this.oreShell = new THREE.InstancedMesh(oreGeometry(), oreMaterial, MAX_ORE_INSTANCES);
+    this.oreVein = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(7.6, 0), oreVeinMaterial, MAX_ORE_INSTANCES);
+    this.oreShell.count = 0; this.oreVein.count = 0;
+    this.oreShell.frustumCulled = false; this.oreVein.frustumCulled = false;
+    this.scene.add(this.oreShell, this.oreVein);
+    this.muzzleLight = new THREE.PointLight('#ffd9a8', 0, 320, 1.6);
+    this.scene.add(this.muzzleLight);
+    this.aimMarker = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(-20, 0, 12), new THREE.Vector3(-7, 0, 12),
+      new THREE.Vector3(7, 0, 12), new THREE.Vector3(20, 0, 12),
+      new THREE.Vector3(0, -20, 12), new THREE.Vector3(0, -7, 12),
+      new THREE.Vector3(0, 7, 12), new THREE.Vector3(0, 20, 12),
+    ]), new THREE.LineBasicMaterial({ color: '#efb879', transparent: true, opacity: 0.5 }));
+    this.aimMarker.visible = false; this.scene.add(this.aimMarker);
+
+    this.shield = new ShieldFlash(48); this.scene.add(this.shield.mesh);
+    this.damagePlate = new THREE.Mesh(new THREE.BoxGeometry(8 * SHIP_SCALE, 14 * SHIP_SCALE, 1.6 * SHIP_SCALE), plateMaterial);
+    this.damagePlate.castShadow = true; this.damagePlate.receiveShadow = true;
+    this.damagePlate.visible = false; this.scene.add(this.damagePlate);
+
+    // Bloom is the first thing to drop: it is the only pass, and it costs a full-screen render.
+    this.lowSpec = this.reducedMotion || window.devicePixelRatio * window.innerWidth * window.innerHeight > 3600000;
+    this.composer = new EffectComposer(this.renderer);
+    this.composer.addPass(new RenderPass(this.scene, this.camera));
+    this.composer.addPass(new UnrealBloomPass(new THREE.Vector2(1024, 768), 0.55, 0.4, 0.82));
 
     new ResizeObserver(() => this.resize()).observe(host);
     this.resize();
@@ -216,6 +291,7 @@ export class SpaceScene {
     if (!width || !height) return;
     this.lastWidth = width; this.lastHeight = height;
     this.renderer.setSize(width, height);
+    this.composer.setSize(width, height);
     this.updateProjection();
   }
 
@@ -242,7 +318,28 @@ export class SpaceScene {
     this.updateProjection();
   }
   fitSector() { this.mode = 'map'; this.mapZoom = 1; this.updateProjection(); }
-  changeShip(shipClass: ShipClass) { disposeObject(this.ship.group); this.ship = buildShip(shipClass); this.ship.group.scale.setScalar(SHIP_SCALE); this.scene.add(this.ship.group); }
+  changeShip(shipClass: ShipClass) {
+    disposeObject(this.ship.group);
+    this.gunPivots = [];
+    this.customTurrets = [];
+    this.ship = buildShip(shipClass);
+    this.ship.group.scale.setScalar(SHIP_SCALE);
+    this.scene.add(this.ship.group);
+    this.scorchSwaps.length = 0;
+    if (this.damageBelow) this.applyScorch();
+  }
+
+  /** Puts an assembled custom hull in the flight view. Guns and turrets come with it. */
+  setShip(model: ShipModel | BuiltShip) {
+    disposeObject(this.ship.group);
+    this.gunPivots = [];
+    this.ship = model;
+    this.customTurrets = 'turrets' in model ? model.turrets : [];
+    this.ship.group.scale.setScalar(SHIP_SCALE);
+    this.scene.add(this.ship.group);
+    this.scorchSwaps.length = 0;
+    if (this.damageBelow) this.applyScorch();
+  }
 
   project(position: Vec2, z = 0) {
     const point = new THREE.Vector3(position.x, position.y, z).project(this.camera);
@@ -274,6 +371,191 @@ export class SpaceScene {
     this.stationFlash = 1;
     this.waves.pulse(STATION.x, STATION.y, -8, '#83b9b5', 190, 1.6);
     this.waves.pulse(STATION.x, STATION.y, -8, '#dce6e8', 120, 1.1);
+  }
+
+  /** The station turns slowly; its arm colliders turn with it. */
+  get stationAngle() { return this.station.rotation.z; }
+
+  /** Screen pixel -> the z = 0 navigation plane. The flight camera is tilted, so this is a ray/plane cut. */
+  unproject(screenX: number, screenY: number): Vec2 {
+    this.ndc.set((screenX / this.lastWidth) * 2 - 1, 1 - (screenY / this.lastHeight) * 2);
+    this.raycaster.setFromCamera(this.ndc, this.camera);
+    this.raycaster.ray.intersectPlane(this.aimPlane, this.aimHit);
+    return { x: this.aimHit.x, y: this.aimHit.y };
+  }
+
+  spawnRock(obstacle: Obstacle) {
+    const mesh = cachedAsteroid(obstacle.radius, obstacle.seed);
+    mesh.position.set(obstacle.x, obstacle.y, obstacle.z);
+    mesh.rotation.set(obstacle.seed, obstacle.seed * 0.4, obstacle.seed * 0.7);
+    mesh.castShadow = true; mesh.receiveShadow = true;
+    // Recycled meshes must come back solid: a previous life may have left a dissolve clone on them.
+    if (!this.rockBaseMaterial) this.rockBaseMaterial = mesh.material as THREE.Material;
+    else mesh.material = this.rockBaseMaterial;
+    this.rocks.set(obstacle.id, mesh);
+    this.scene.add(mesh);
+  }
+
+  /** Removes a rock mesh only. The geometry comes from the shared cache and must never be disposed here. */
+  removeRock(id: number) {
+    const mesh = this.rocks.get(id);
+    if (mesh) { this.rocks.delete(id); mesh.removeFromParent(); }
+    for (let i = this.dissolving.length - 1; i >= 0; i--) {
+      if (this.dissolving[i].id !== id) continue;
+      const entry = this.dissolving[i];
+      entry.mesh.removeFromParent();
+      entry.material.dispose();
+      this.dissolving.splice(i, 1);
+    }
+  }
+
+  /**
+   * Dissolves a rock instead of removing it instantly: the shared material is cloned per rock and its
+   * dissolve uniform is driven 0..1 over 0.35 s. The clone (and only the clone) is disposed at the end.
+   */
+  dissolveRock(id: number) {
+    const mesh = this.rocks.get(id);
+    if (!mesh) return;
+    this.rocks.delete(id);
+    const { material, uniform } = makeDissolveMaterial(mesh.material as THREE.Material);
+    mesh.material = material;
+    this.dissolving.push({ id, mesh, material, uniform, t: 0 });
+  }
+
+  /** One reusable fresnel shell around the hull; the flash is aimed at the world bearing the hit came from. */
+  hitFlashShip(bearing: number) {
+    this.shield.flash(bearing);
+  }
+
+  /** Damage states as hull integrity falls: scorched tiles and one detached plate below 45%, reverted above. */
+  setDamage(level: number) {
+    const below = level < DAMAGE_THRESHOLD;
+    if (below === this.damageBelow) return;
+    this.damageBelow = below;
+    if (below) {
+      this.applyScorch();
+      this.damagePlate.visible = true;
+    } else {
+      for (const swap of this.scorchSwaps) swap.mesh.material = swap.original;
+      this.scorchSwaps.length = 0;
+      this.damagePlate.visible = false;
+    }
+  }
+
+  /** Swaps the first few armor tiles to scorched variants. Idempotent: a second call is a no-op while swaps exist. */
+  private applyScorch() {
+    if (this.scorchSwaps.length > 0) return;
+    this.ship.group.traverse(child => {
+      if (this.scorchSwaps.length >= 3) return;
+      if (child instanceof THREE.Mesh && (child.material === armorMaterial || child.material === lightArmorMaterial)) {
+        this.scorchSwaps.push({ mesh: child, original: child.material });
+        child.material = this.scorchSwaps.length % 2 ? scorchedArmor : scorchedLight;
+      }
+    });
+  }
+
+  explode(x: number, y: number, radius: number) {
+    const bursts = this.reducedMotion ? 4 : 10 + Math.round(radius);
+    for (let i = 0; i < bursts; i++) {
+      const angle = Math.random() * Math.PI * 2, speed = 40 + Math.random() * (60 + radius * 3);
+      this.sparks.emit(x, y, 6, Math.cos(angle) * speed, Math.sin(angle) * speed, 20 + Math.random() * 60, 3 + Math.random() * 6, 0.5 + Math.random() * 0.7);
+    }
+    for (let i = 0; i < 6 + Math.round(radius / 4); i++) {
+      const angle = Math.random() * Math.PI * 2, speed = 12 + Math.random() * 30;
+      this.vent.emit(x, y, 8, Math.cos(angle) * speed, Math.sin(angle) * speed, 10, 6 + Math.random() * 8, 1.1 + Math.random());
+    }
+    this.waves.pulse(x, y, 4, '#efb879', radius * 2.2, 0.75);
+    this.waves.pulse(x, y, 2, '#df8277', radius * 1.3, 0.5);
+    this.muzzleLight.position.set(x, y, 40);
+    this.muzzleLight.intensity = Math.min(90, radius * 2.4);
+    const distance = Math.hypot(x - this.ship.group.position.x, y - this.ship.group.position.y);
+    this.shake = Math.min(1.6, this.shake + Math.max(0, 1 - distance / 1500) * Math.min(1.2, radius / 24));
+  }
+
+  /** Every round should feel felt: a few sparks and a brief light, never a camera shake. */
+  hitFlash(x: number, y: number) {
+    for (let i = 0; i < 4; i++) {
+      const angle = Math.random() * Math.PI * 2, speed = 25 + Math.random() * 60;
+      this.sparks.emit(x, y, 8, Math.cos(angle) * speed, Math.sin(angle) * speed, 25, 3, 0.22 + Math.random() * 0.2);
+    }
+    this.muzzleLight.position.set(x, y, 40);
+    this.muzzleLight.intensity = Math.max(this.muzzleLight.intensity, 18);
+  }
+
+  /** Attaches a visible gun to each player mount and keeps the pivots for traverse. */
+  setGunMounts(defs: { weapon: string; lx: number; ly: number }[]) {
+    for (const entry of this.gunPivots) entry.root.removeFromParent();
+    this.gunPivots = [];
+    for (const def of defs) {
+      const gun = buildGunMount(def.weapon as 'ac20' | 'ac70' | 'gauss' | 'cutter' | 'swarm');
+      gun.group.position.set(def.lx, def.ly, 15);
+      this.ship.group.add(gun.group);
+      this.gunPivots.push({ root: gun.group, pivot: gun.pivot });
+    }
+  }
+
+  addHostile(hostile: Hostile) {
+    const model = hostile.kind === 'mine' ? buildMine() : hostile.kind === 'turret' ? buildTurret() : buildRaider(hostile.kind);
+    model.group.position.set(hostile.state.position.x, hostile.state.position.y, -2);
+    model.group.rotation.z = hostile.state.angle;
+    this.scene.add(model.group);
+    this.hostileModels.set(hostile.id, model);
+  }
+
+  removeHostile(id: number) {
+    const model = this.hostileModels.get(id);
+    if (!model) return;
+    disposeObject(model.group);
+    this.hostileModels.delete(id);
+  }
+
+  /** Drives every live hostile: hull, flames, turret traverse and the mine's proximity blink. */
+  private syncHostiles(hostiles: Hostile[], dt: number, time: number) {
+    for (const hostile of hostiles) {
+      const model = this.hostileModels.get(hostile.id);
+      if (!model) continue;
+      model.group.position.set(hostile.state.position.x, hostile.state.position.y, -2);
+      model.group.rotation.z = hostile.state.angle;
+      const thrust = Math.max(0, hostile.state.thrustLevel);
+      for (const flame of model.flames) {
+        flame.visible = thrust > 0.04;
+        flame.scale.y = Math.max(0.05, thrust);
+      }
+      for (let i = 0; i < model.turrets.length; i++) {
+        const mount = hostile.mounts[i];
+        if (!mount) continue;
+        // Smooth damping, same law as the player's guns.
+        model.turrets[i].rotation.z += (mount.bearing - model.turrets[i].rotation.z) * (1 - Math.exp(-dt * 9));
+      }
+      if (hostile.kind === 'mine') {
+        const range = Math.hypot(hostile.state.position.x - this.ship.group.position.x, hostile.state.position.y - this.ship.group.position.y);
+        const proximity = Math.max(0, 1 - range / 600);
+        model.lamp.visible = Math.sin(time * (3 + 14 * proximity)) > 0;
+      } else {
+        model.lamp.visible = hostile.mode === 'attack' ? Math.sin(time * 9) > -0.2 : Math.sin(time * 2.4) > 0;
+      }
+    }
+  }
+
+  /** Read-only diagnostics: what the beam and ore pools are actually drawing this frame. */
+  combatDiagnostics() {
+    return { beams: this.beams.diagnostics(), ore: { count: this.oreShell.count, visible: this.oreShell.visible } };
+  }
+
+  syncOre(ore: Ore[]) {
+    const count = Math.min(ore.length, MAX_ORE_INSTANCES);
+    for (let i = 0; i < count; i++) {
+      const chunk = ore[i];
+      this.oreDummy.position.set(chunk.x, chunk.y, 2);
+      this.oreDummy.rotation.set(chunk.id * 0.7, chunk.id * 1.3, chunk.id * 0.4);
+      this.oreDummy.scale.setScalar(1.5 + (chunk.id % 5) * 0.12);
+      this.oreDummy.updateMatrix();
+      this.oreShell.setMatrixAt(i, this.oreDummy.matrix);
+      this.oreVein.setMatrixAt(i, this.oreDummy.matrix);
+    }
+    this.oreShell.count = count; this.oreVein.count = count;
+    this.oreShell.instanceMatrix.needsUpdate = true; this.oreVein.instanceMatrix.needsUpdate = true;
+    this.oreShell.visible = count > 0; this.oreVein.visible = count > 0;
   }
 
   render(frame: SceneFrame) {
@@ -319,11 +601,12 @@ export class SpaceScene {
     this.stars.position.set(cx * 0.94, cy * 0.94, 0);
     this.moon.visible = !map;
     this.sectorGrid.visible = map;
-    for (const rock of this.rocks) rock.mesh.visible = map ? rock.planar : true;
+    for (const mesh of this.rocks.values()) mesh.visible = map ? mesh.position.z === 0 : true;
     this.orbit.position.set(state.position.x, state.position.y, 0);
     this.orbit.visible = !this.cinematic && !map;
     this.ship.group.position.set(state.position.x, state.position.y, 0);
     this.ship.group.rotation.z = state.angle;
+    this.shield.mesh.position.set(state.position.x, state.position.y, 0);
     this.ship.group.visible = !map || true;
     this.selection.position.copy(this.ship.group.position); this.selection.rotation.z = state.angle; this.selection.scale.setScalar(SHIP_SCALE);
     this.selection.visible = !this.cinematic && !map;
@@ -417,7 +700,45 @@ export class SpaceScene {
       this.scanSweep.rotation.z = -time * 2.4;
     }
     this.plume.update(dt); this.sparks.update(dt); this.vent.update(dt); this.waves.update(dt);
-    this.renderer.render(this.scene, this.camera);
+    this.shield.update(dt);
+    for (let i = this.dissolving.length - 1; i >= 0; i--) {
+      const entry = this.dissolving[i];
+      entry.t += dt / DISSOLVE_SECONDS;
+      entry.uniform.value = Math.min(1, entry.t);
+      entry.mesh.visible = !map;
+      if (entry.t >= 1) {
+        entry.mesh.removeFromParent();
+        entry.material.dispose();
+        this.dissolving.splice(i, 1);
+      }
+    }
+    if (this.damageBelow) {
+      const cos = Math.cos(state.angle), sin = Math.sin(state.angle);
+      const ox = -27 * SHIP_SCALE, oy = -6 * SHIP_SCALE;
+      this.damagePlate.position.set(state.position.x + ox * cos - oy * sin, state.position.y + ox * sin + oy * cos, 9);
+      if (this.reducedMotion) this.damagePlate.rotation.set(0.3, 0.4, state.angle);
+      else this.damagePlate.rotation.set(Math.sin(time * 0.6) * 0.6, time * 0.45, state.angle + Math.sin(time * 0.31) * 0.5);
+      this.damagePlate.visible = !map;
+    }
+    if (frame.rounds) this.tracers.sync(frame.rounds);
+    this.beams.sync(map ? [] : frame.beams ?? []);
+    this.syncOre(frame.ore ?? []);
+    const mounts = frame.mounts;
+    const pivots: THREE.Group[] = this.customTurrets.length ? this.customTurrets : this.gunPivots.map(entry => entry.pivot);
+    for (let i = 0; i < pivots.length; i++) {
+      const mount = mounts?.[i];
+      if (!mount) continue;
+      // Smooth damping: barrels swing rather than snap.
+      pivots[i].rotation.z += (mount.bearing - pivots[i].rotation.z) * (1 - Math.exp(-dt * 9));
+    }
+    if (frame.aim && this.mode === 'flight' && !this.cinematic) {
+      this.aimMarker.visible = true;
+      this.aimMarker.position.set(frame.aim.x, frame.aim.y, 0);
+    } else this.aimMarker.visible = false;
+    if (frame.hostiles) this.syncHostiles(frame.hostiles, dt, time);
+    this.muzzleLight.intensity = Math.max(0, this.muzzleLight.intensity - dt * 140);
+    if (this.lowSpec) this.renderer.render(this.scene, this.camera);
+    else this.composer.render();
   }
 }
 

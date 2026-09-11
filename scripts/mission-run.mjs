@@ -3,15 +3,27 @@ import { writeFileSync } from 'node:fs';
 
 /** An external test pilot issues ordinary key events; it cannot mutate game state. */
 export async function runMission(page) {
+  // Watches the run from outside the pilot: the first frame with hostiles on scope gets captured.
+  const watcher = (async () => {
+    for (let i = 0; i < 600; i++) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      const hostiles = await page.evaluate(() => { try { return window.__DRIFT__.snapshot().combat.hostiles.length; } catch { return 0; } }).catch(() => 0);
+      if (hostiles > 0) {
+        await page.screenshot({ path: 'artifacts/hostiles-engaged.png' }).catch(() => {});
+        return hostiles;
+      }
+    }
+    return 0;
+  })();
   const result = await page.evaluate(async () => {
     const { createObstacles, createCargo, STATION, RELAY } = await import('/src/physics.ts');
-    const { SCAN } = await import('/src/mission.ts');
+    const { SCAN } = await import('/src/contracts.ts');
     const rocks = createObstacles().filter(rock => rock.z === 0);
     const cargos = createCargo();
 
     // Stand-off distances sit inside each interaction envelope: relay 145 m, scan 130 m, recovery 75 m, docking 115 m.
     const legs = [
-      { id: 'relay', position: RELAY, standoff: SCAN.relay.radius - 48, kind: 'relay' },
+      { id: 'relay', position: RELAY, standoff: 95, kind: 'relay' },
       ...cargos.filter(cargo => cargo.kind === 'archive').map(cargo => ({ id: cargo.id, position: cargo.position, standoff: 58, kind: 'recover' })),
       { id: 'blackbox', position: cargos.find(cargo => cargo.kind === 'blackbox').position, standoff: 58, kind: 'recover' },
       { id: 'station', position: STATION, standoff: 88, kind: 'dock' },
@@ -25,6 +37,13 @@ export async function runMission(page) {
     };
     const release = () => { for (const code of [...pressed]) setKey(code, false); };
     const tap = code => { setKey(code, true); setKey(code, false); };
+    // Guns follow the mouse, so the pilot aims the way a player does: a real pointer event at the target.
+    const canvas = document.querySelector('#space-canvas');
+    const aimAt = (world) => {
+      const point = window.__DRIFT__.project(world.x, world.y);
+      const rect = canvas.getBoundingClientRect();
+      canvas.dispatchEvent(new PointerEvent('pointermove', { clientX: rect.left + point.x, clientY: rect.top + point.y, bubbles: true }));
+    };
     const len = (x, y) => Math.hypot(x, y);
     function nearestRockDistance(position) {
       let nearest = Infinity;
@@ -82,7 +101,8 @@ export async function runMission(page) {
 
     /** Try a wide corridor first, then progressively tighter ones; a straight line is the last resort. */
     function routeTo(start, goal) {
-      for (const clearance of [40, 30, 22, 16]) {
+      // The hull is ~118 m long, so a corridor has to clear half of that plus margin on each side.
+      for (const clearance of [78, 62, 48, 34]) {
         try { return { path: plan(start, goal, clearance), clearance }; } catch { /* tighten and retry */ }
       }
       return { path: [goal], clearance: 0 };
@@ -93,6 +113,8 @@ export async function runMission(page) {
     let path = [];
     let replanned = 0;
     let lastLog = 0;
+    let aiming = false;
+    let hostilesSeen = 0;
     const progress = [];
     return await new Promise((resolve, reject) => {
       const timer = setInterval(() => {
@@ -101,7 +123,7 @@ export async function runMission(page) {
           const ship = snapshot.state;
           if (snapshot.missionComplete) {
             release(); clearInterval(timer);
-            resolve({ time: snapshot.elapsed, hull: ship.hull, payout: snapshot.mission.payout, progress });
+            resolve({ time: snapshot.elapsed, hull: ship.hull, payout: snapshot.payout, progress, hostilesSeen, killed: snapshot.combat.hostilesKilled, bounty: snapshot.combat.pendingBounty });
             return;
           }
           if (snapshot.modalOpen || snapshot.crashed) throw new Error(`Flight interrupted: hull ${ship.hull}, fuel ${ship.fuel}, recovered ${snapshot.recoveredCount}`);
@@ -109,17 +131,32 @@ export async function runMission(page) {
 
           const leg = legs[legIndex];
           if (!leg) throw new Error('Test pilot ran out of legs before docking');
-          if (leg.kind === 'relay' && snapshot.mission.stage !== 'relay') { legIndex++; path = []; return; }
+          if (leg.kind === 'relay' && snapshot.stage !== 0) { legIndex++; path = []; return; }
           const cargo = snapshot.cargos.find(item => item.id === leg.id);
           if (leg.kind === 'recover' && cargo?.collected) { legIndex++; path = []; return; }
 
-          const goal = leg.position;
+          // Anything hostile inside engagement range becomes the goal: this contract spawns raiders
+          // once the relay telemetry lands, and a salvage run that ignores them dies in the belt.
+          const threat = snapshot.combat.hostiles
+            .map(h => ({ h, range: len(h.x - ship.position.x, h.y - ship.position.y) }))
+            .sort((a, b) => a.range - b.range)[0];
+          if (threat && threat.range < 1250) {
+            aiming = true;
+            aimAt({ x: threat.h.x, y: threat.h.y });
+            setKey('Space', threat.range < 900);
+            hostilesSeen = Math.max(hostilesSeen, snapshot.combat.hostiles.length);
+          } else if (aiming) {
+            aiming = false;
+            setKey('Space', false);
+          }
+
+          const goal = threat && threat.range < 1250 ? { x: threat.h.x, y: threat.h.y } : leg.position;
           const speed = len(ship.velocity.x, ship.velocity.y);
           const distance = len(goal.x - ship.position.x, goal.y - ship.position.y);
 
-          if (distance < leg.standoff && speed < 2.6) {
+          if (!threat && distance < leg.standoff && speed < 2.6) {
             release();
-            const ready = leg.kind === 'relay' || leg.kind === 'dock' || snapshot.mission.scanned.includes(leg.id);
+            const ready = leg.kind === 'relay' || leg.kind === 'dock' || snapshot.scanned.includes(leg.id);
             if (ready && leg.kind !== 'relay') tap('KeyR');
             return;
           }
@@ -159,20 +196,23 @@ export async function runMission(page) {
       }, 35);
     });
   });
-  assert.equal(result.payout, 12400 + 4200);
+  // SR-084: 2,800 contract payment plus the 4,200 black-box bonus objective.
+  assert.equal(result.payout, 2800 + 4200);
   assert(result.hull > 0);
+  assert(result.hostilesSeen >= 2, 'SR-084 spawns its raiders once the telemetry lands');
+  await watcher;
   await page.setViewportSize({ width: 1440, height: 960 });
-  await page.locator('#dialog-title').filter({ hasText: 'You brought them home.' }).waitFor();
+  await page.locator('#dialog-title').filter({ hasText: 'done.' }).waitFor();
   await page.screenshot({ path: 'artifacts/mission-complete.png' });
   await page.locator('#next-sortie').click();
   await page.locator('#launch-sortie').waitFor();
   const docked = await page.evaluate(() => window.__DRIFT__.snapshot());
   assert.equal(docked.flow, 'hangar');
-  assert.equal(docked.mission.payout, 12400 + 4200, 'hangar keeps the finished contract on the books until relaunch');
+  assert.equal(docked.payout, 2800 + 4200, 'hangar keeps the finished contract on the books until relaunch');
   await page.locator('#launch-sortie').click();
   await page.waitForFunction(() => window.__DRIFT__.snapshot().flow === 'flight', { timeout: 20000 });
   const relaunched = await page.evaluate(() => window.__DRIFT__.snapshot());
-  assert.equal(relaunched.recoveredCount, 0); assert.equal(relaunched.missionComplete, false); assert.equal(relaunched.mission.payout, 0);
+  assert.equal(relaunched.recoveredCount, 0); assert.equal(relaunched.missionComplete, false); assert.equal(relaunched.payout, 0);
   assert(relaunched.state.fuel > 15500, 'relaunched sortie refills propellant');
   writeFileSync('artifacts/mission-results.json', JSON.stringify({ passed: true, ...result, replay: true }, null, 2));
 }
