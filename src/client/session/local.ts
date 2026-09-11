@@ -32,12 +32,17 @@ import type {
   ShipView,
   WeaponView,
 } from '../../shared/contracts.ts';
-import { CATALOG } from '../../shared/catalog.ts';
+import { CATALOG, defaultFit } from '../../shared/catalog.ts';
 import { CAMPAIGN_START, PVP, RULES } from '../../shared/balance.ts';
 import { hash32, hex8 } from '../../shared/ids.ts';
-import { PVP_TEAMS, TEAM_CREW } from '../../shared/teams.ts';
+import { PVP_TEAMS, TEAM_CREW, TEAM_HOSTILE } from '../../shared/teams.ts';
 import { validateCommand } from '../../shared/validate.ts';
 import { evaluateResult } from '../../sim/score.ts';
+import { campaignSource } from '../../sim/campaign/source.ts';
+import { CAMPAIGN_MISSIONS, missionDefinition } from '../../sim/campaign/missions.ts';
+import { nearestFreeItem } from '../../sim/mission.ts';
+import type { CampaignSource } from '../../server/room.ts';
+import { createMission, interactFacts, recoverItem, applyUtility, applyCrewOrder, requestRespawn } from '../../sim/world.ts';
 import {
   addPilot,
   applyInput,
@@ -146,6 +151,7 @@ export type HostRequest =
   | { t: 'command'; requestId: Id; command: Command }
   | { t: 'intent'; intent: FlightIntent }
   | { t: 'release'; reason: LocalReleaseReason }
+  | { t: 'pause'; paused: boolean }
   | { t: 'dispose' };
 
 export type HostReply =
@@ -176,6 +182,7 @@ export class LocalSession implements SessionPort {
   private link: LinkState = 'idle';
   private ready: PromiseWithResolvers<void> | null = null;
   private disposed = false;
+  private paused = false;
 
   constructor(options: LocalSessionOptions = {}) {
     this.options = options;
@@ -266,6 +273,12 @@ export class LocalSession implements SessionPort {
 
   releaseControls(reason: LocalReleaseReason): void {
     this.worker?.postMessage({ t: 'release', reason } satisfies HostRequest);
+  }
+
+  setPaused(paused: boolean): void {
+    if (this.paused === paused) return;
+    this.paused = paused;
+    this.worker?.postMessage({ t: 'pause', paused } satisfies HostRequest);
   }
 
   async dispose(reason = 'disposed'): Promise<void> {
@@ -378,6 +391,11 @@ class OfflineRoom implements LocalHost {
   private timer: ReturnType<typeof setInterval> | null = null;
   private settling = false;
   private closed = false;
+  private paused = false;
+  private accumulator = 0;
+  private lastPublishMs = 0;
+  private mission: CampaignSource | null = null;
+  private engagement: { objectiveId: Id; itemId: Id | null } | null = null;
 
   constructor(post: (reply: HostReply) => void, now: () => number, storage: OfflineStorage | null) {
     this.post = post;
@@ -399,6 +417,13 @@ class OfflineRoom implements LocalHost {
         return;
       case 'release':
         this.pendingIntent = null;
+        if (this.world) releaseInput(this.world, this.pilotId);
+        return;
+      case 'pause':
+        this.paused = request.paused;
+        this.pendingIntent = null;
+        this.lastStepMs = this.now();
+        this.accumulator = 0;
         if (this.world) releaseInput(this.world, this.pilotId);
         return;
       case 'dispose':
@@ -535,9 +560,7 @@ class OfflineRoom implements LocalHost {
     if (!pilot) return { requestId, ok: false, code: 'denied', message: 'no ship for this pilot' };
     switch (command.kind) {
       case 'request-respawn': {
-        if (pilot.life !== 'destroyed') return { requestId, ok: false, code: 'wrong-life', message: pilot.life };
-        pilot.respawnAtTick = world.tick;
-        return { requestId, ok: true, code: 'ok' };
+        return requestRespawn(world, this.pilotId) ? { requestId, ok: true, code: 'ok' } : { requestId, ok: false, code: 'wrong-life', message: pilot.life };
       }
       case 'reload': {
         const weapon = pilot.weapons.find(candidate => candidate.slotId === command.slotId);
@@ -549,6 +572,20 @@ class OfflineRoom implements LocalHost {
       case 'sensor-mode': {
         pilot.scanning = command.mode === 'active';
         return { requestId, ok: true, code: 'ok' };
+      }
+      case 'utility': {
+        const result = applyUtility(world, this.pilotId, command.slotId, command.targetId, command.active);
+        return { requestId, ok: result.ok, code: result.ok ? 'ok' : 'denied' };
+      }
+      case 'crew-order':
+        return { requestId, ok: applyCrewOrder(world, this.pilotId, command.order, command.contactId), code: 'ok' };
+      case 'interact': {
+        const resolved = this.mission?.resolve(command.entityId);
+        if (!resolved || !world.mission) return { requestId, ok: false, code: 'denied', message: 'Select an active objective.' };
+        const position = bodyOf(world, pilot.bodyId)?.position ?? { x: 0, y: 0 };
+        this.engagement = { ...resolved, itemId: resolved.itemId ?? nearestFreeItem(world.mission, resolved.objectiveId, position)?.id ?? null };
+        const result = this.observeMission();
+        return { requestId, ok: result.accepted, code: result.accepted ? 'ok' : 'denied', message: result.code };
       }
       default:
         // Mission-graph commands are refused rather than silently ignored: a solo skirmish has no
@@ -590,12 +627,23 @@ class OfflineRoom implements LocalHost {
     const lobby = this.lobby!;
     this.matchCount += 1;
     const epoch = `offline-${hex8(hash32(`${this.snapshot?.campaign.id ?? 'campaign'}:${this.matchCount}`))}`;
-    const teams = lobby.mode === 'team-deathmatch' ? PVP_TEAMS : [TEAM_CREW];
+    const definition = lobby.mode === 'campaign' ? missionDefinition(lobby.missionId ?? CAMPAIGN_MISSIONS[0]!.id) : null;
+    if (definition) { lobby.missionId = definition.id; lobby.mapId = definition.sectorId; }
+    this.mission = definition ? campaignSource(definition.id, hash32(epoch)) : null;
+    this.engagement = null;
+    const teams = lobby.mode === 'team-deathmatch' ? PVP_TEAMS : [TEAM_CREW, TEAM_HOSTILE];
     const world = createWorld({ epoch, mode: lobby.mode, mapId: lobby.mapId, seed: hash32(epoch), matchSeconds: this.config.matchSeconds, teams });
     for (const seat of lobby.seats) {
       if (!seat) continue;
       addPilot(world, { pilotId: seat.pilotId, name: seat.name, teamId: seat.teamId, fit: seat.fit, isBot: seat.isBot });
     }
+    if (lobby.mode === 'skirmish') {
+      for (let index = 0; index < 2; index++) addPilot(world, {
+        pilotId: `raider-${index}`, name: `Cinder ${index + 1}`, teamId: TEAM_HOSTILE,
+        fit: defaultFit('needle'), isBot: true,
+      });
+    }
+    if (definition) createMission(world, definition);
     world.phase = 'countdown';
     this.world = world;
     this.phase = 'countdown';
@@ -610,6 +658,7 @@ class OfflineRoom implements LocalHost {
   private startLoop(): void {
     this.stopLoop();
     this.lastStepMs = this.now();
+    this.accumulator = 0;
     const interval = this.config.pace === 'drain' ? 0 : 1000 / RELEASE.physicsHz;
     this.timer = setInterval(() => this.tick(), interval);
   }
@@ -624,9 +673,10 @@ class OfflineRoom implements LocalHost {
   private tick(): void {
     if (this.closed || this.world === null) return;
     const now = this.now();
-    const steps = this.config.pace === 'drain'
-      ? MAX_CATCH_UP
-      : Math.min(MAX_CATCH_UP, Math.max(1, Math.round(((now - this.lastStepMs) * RELEASE.physicsHz) / 1000)));
+    if (this.paused) { this.lastStepMs = now; return; }
+    this.accumulator = Math.min(MAX_CATCH_UP / RELEASE.physicsHz, this.accumulator + Math.max(0, now - this.lastStepMs) / 1000);
+    const steps = this.config.pace === 'drain' ? MAX_CATCH_UP : Math.floor(this.accumulator * RELEASE.physicsHz + 1e-8);
+    if (this.config.pace !== 'drain') this.accumulator -= steps / RELEASE.physicsHz;
     this.lastStepMs = now;
     for (let step = 0; step < steps; step++) {
       if (this.phase === 'countdown') {
@@ -640,11 +690,17 @@ class OfflineRoom implements LocalHost {
       if (this.phase !== 'live') break;
       this.feedIntent();
       stepWorld(this.world);
-      if (this.world.tick % SNAPSHOT_TICKS === 0) this.publish();
+      this.observeMission();
+      this.mission?.advance(this.world.tick);
+      const outcome = this.mission?.outcome?.();
+      if (outcome && outcome !== 'in-progress') this.world.result = { outcome, winningTeamId: outcome === 'mission-complete' ? TEAM_CREW : null };
       if (this.world.tick % CHECKPOINT_TICKS === 0) void this.persist(false);
       if (this.resolveResult()) break;
     }
-    if (this.phase !== 'settlement') this.publish();
+    if (this.phase !== 'settlement' && (now - this.lastPublishMs >= 1000 / (RELEASE.physicsHz / SNAPSHOT_TICKS) || this.config.pace === 'drain')) {
+      this.lastPublishMs = now;
+      this.publish();
+    }
   }
 
   /** Every recorded intent becomes a scheduled frame; the world decides when it applies (B4). */
@@ -662,9 +718,19 @@ class OfflineRoom implements LocalHost {
     });
   }
 
+  private observeMission(): { accepted: boolean; code: string } {
+    if (!this.world || !this.mission || !this.engagement) return { accepted: false, code: 'no-objective' };
+    const facts = interactFacts(this.world, this.pilotId, this.engagement.objectiveId, this.engagement.itemId);
+    if (!facts) return { accepted: false, code: 'unavailable' };
+    const result = this.mission.observe({ ...this.engagement, pilotId: this.pilotId, isBot: false, tick: this.world.tick, facts });
+    if (this.engagement.itemId && (result.code === 'ok' || result.code === 'already-recovered')) recoverItem(this.world, this.pilotId, this.engagement.itemId);
+    if (!this.mission.viewObjectives().some(o => o.id === this.engagement?.objectiveId && o.state === 'active')) this.engagement = null;
+    return result;
+  }
+
   private resolveResult(): boolean {
     const world = this.world!;
-    if (world.result === null && world.mode !== 'team-deathmatch' && world.tick >= world.matchEndsAtTick) {
+    if (world.result === null && world.mode === 'skirmish' && world.tick >= world.matchEndsAtTick) {
       // Co-op outcomes come from the mission graph; until one drives the sortie it ends on the arena
       // clock under the same timeout-and-sudden-death rule the deathmatch ledger already uses.
       const occupied = world.ledger.teams.filter(teamId => [...world.ships.values()].some(pilot => pilot.teamId === teamId && pilot.life !== 'spectating'));
@@ -688,9 +754,14 @@ class OfflineRoom implements LocalHost {
     const snapshot = this.snapshot!;
     // The shared wallet is paid once per resolved settlement, never once per pilot (B7); a retry
     // after a failed write reuses the same result id, so it can never pay twice either.
-    if (!snapshot.settlements.some(entry => entry.resultId === `${world.epoch}:result`)) {
-      const settlement: StoredSettlement = { resultId: `${world.epoch}:result`, receiptId: `${world.epoch}-receipt`, credits: snapshot.campaign.credits };
-      this.snapshot = { ...snapshot, settlements: [...snapshot.settlements, settlement] };
+    const reward = world.result?.outcome === 'mission-complete' ? this.mission?.settlement() : null;
+    const resultId = reward ? `mission:${this.lobby!.missionId}` : `${world.epoch}:result`;
+    if (!snapshot.settlements.some(entry => entry.resultId === resultId)) {
+      const credits = snapshot.campaign.credits + (reward?.rewardCredits ?? 0);
+      const settlement: StoredSettlement = { resultId, receiptId: reward?.receiptId ?? `${world.epoch}-receipt`, credits };
+      this.snapshot = { ...snapshot, campaign: { ...snapshot.campaign, credits }, settlements: [...snapshot.settlements, settlement],
+        receipts: reward ? [...snapshot.receipts, { objectiveId: this.lobby!.missionId!, itemId: 'complete', receiptId: settlement.receiptId }] : snapshot.receipts,
+        decisions: this.mission?.decisions?.() ?? snapshot.decisions };
     }
     for (const seat of this.lobby?.seats ?? []) {
       if (seat) noteLife(this.lobby!, seat.pilotId, world.ships.get(seat.pilotId)?.life ?? 'staged');
@@ -699,6 +770,8 @@ class OfflineRoom implements LocalHost {
   }
 
   private returnToLobby(): void {
+    const next = this.world?.result?.outcome === 'mission-complete' ? this.mission?.settlement()?.nextMissionId : null;
+    if (next && this.lobby) this.lobby.missionId = next;
     this.world = null;
     this.phase = 'lobby';
     this.save = 'clean';
@@ -713,14 +786,19 @@ class OfflineRoom implements LocalHost {
 
   /** One write path: a settlement gates the debrief, a periodic checkpoint never blocks play. */
   private async persist(gatesPhase: boolean): Promise<void> {
-    if (this.settling) return;
+    if (this.settling) {
+      if (gatesPhase) setTimeout(() => { void this.persist(true); }, 20);
+      return;
+    }
     const storage = this.storage;
     if (!storage) return;
     this.settling = true;
     this.save = 'pending';
     this.publish();
     try {
-      await storage.save(this.snapshot!.campaign.id, this.withCheckpoint());
+      const saved = this.withCheckpoint();
+      await storage.save(saved.campaign.id, saved);
+      this.snapshot = { ...this.snapshot!, checkpoints: saved.checkpoints, campaign: { ...this.snapshot!.campaign, lastSavedAt: saved.campaign.lastSavedAt } };
       this.save = 'saved';
       if (gatesPhase && this.phase === 'settlement') this.phase = 'debrief';
       this.emit({ kind: 'save', payload: { state: 'saved', at: new Date(this.now()).toISOString(), reason: null } });
@@ -815,7 +893,11 @@ class OfflineRoom implements LocalHost {
           health: item.health,
           reservedByPilotId: item.reservedByPilotId,
         })),
-        missions: [],
+        missions: CAMPAIGN_MISSIONS.map((mission, index) => {
+          const complete = snapshot.receipts.some(r => r.objectiveId === mission.id);
+          const available = index === 0 || snapshot.receipts.some(r => r.objectiveId === CAMPAIGN_MISSIONS[index - 1]!.id);
+          return { id: mission.id, title: mission.title, sectorId: mission.sectorId, state: complete ? 'complete' : available ? 'available' : 'locked' };
+        }),
         decisions: snapshot.decisions.map(decision => ({ id: decision.decisionId, optionId: decision.optionId })),
         activeVote: null,
         // A namespace that is not durable is not offered for resume; a device save is claimed only
@@ -826,7 +908,7 @@ class OfflineRoom implements LocalHost {
       host: null,
       debrief: this.phase === 'debrief' ? this.debrief() : null,
       teamScores: world ? { ...world.ledger.teamScores } : {},
-      objectives: [],
+      objectives: this.mission?.viewObjectives() ?? [],
       respawnAtTick: self?.respawnAtTick ?? null,
       phaseEndsAtTick: this.phase === 'countdown' ? (world?.tick ?? 0) + this.countdownTicks : null,
       save: this.save,
@@ -841,10 +923,10 @@ class OfflineRoom implements LocalHost {
       resultId: resultId ?? 'result',
       outcome: result?.outcome ?? 'no-contest',
       winningTeamId: result?.winningTeamId ?? null,
-      rewardCredits: 0,
+      rewardCredits: result?.outcome === 'mission-complete' ? this.mission?.settlement()?.rewardCredits ?? 0 : 0,
       repairCredits: 0,
       receiptId: resultId === null ? null : this.snapshot!.settlements.find(entry => entry.resultId === resultId)?.receiptId ?? null,
-      nextMissionId: null,
+      nextMissionId: result?.outcome === 'mission-complete' ? this.mission?.settlement()?.nextMissionId ?? null : null,
       pilots: (this.lobby?.seats ?? []).flatMap(seat => {
         if (!seat) return [];
         const tally = world?.ships.get(seat.pilotId)?.score;

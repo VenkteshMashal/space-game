@@ -67,6 +67,8 @@ function Resolve-BunPath {
   if ($env:DRIFT_BUN -and (Test-Path -LiteralPath $env:DRIFT_BUN)) { return $env:DRIFT_BUN }
   $onPath = @(Get-Command bun -CommandType Application -ErrorAction SilentlyContinue) | Select-Object -First 1
   if ($onPath) { return $onPath.Source }
+  $standardBun = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.bun\bin\bun.exe'
+  if (Test-Path -LiteralPath $standardBun) { return $standardBun }
   if ($env:APPDATA) {
     $npmBun = Join-Path $env:APPDATA 'npm\node_modules\bun\bin\bun.exe'
     if (Test-Path -LiteralPath $npmBun) { return $npmBun }

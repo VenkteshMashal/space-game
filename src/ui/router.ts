@@ -311,7 +311,7 @@ export function dispatch(state: ShellState, action: UiAction, ctx: RouterContext
     case 'title.offline':
       return { state: { ...state, busy: true, joinError: null }, effects: [{ kind: 'connect', options: { transport: 'local', pilotName: state.drafts.joinName || 'Pilot' } }] };
     case 'title.join':
-      return navigate(state, 'join');
+      return navigate({ ...state, drafts: { ...state.drafts, joinAddress: state.drafts.joinAddress || ctx.host?.guestOrigin || '' } }, 'join');
     case 'title.host':
       return navigate(state, 'host');
     case 'title.settings':
@@ -343,7 +343,8 @@ export function dispatch(state: ShellState, action: UiAction, ctx: RouterContext
     case 'host.mode-skirmish':
       return { state: { ...state, hostMode: 'skirmish' }, effects: [{ kind: 'host', action: 'configure', data: { mode: 'skirmish' } }] };
     case 'host.start':
-      return { state: { ...state, busy: true }, effects: [{ kind: 'host', action: 'start' }] };
+      if (ctx.host?.launcher !== 'running') return { state: { ...state, notice: 'Run Start-DRIFT.cmd in the game folder, then open its operator link.', noticeKind: 'info' }, effects: [] };
+      return { state: { ...state, busy: true, joinError: null }, effects: [{ kind: 'connect', options: { transport: 'lan', pilotName: state.drafts.joinName || 'Captain' } }] };
     case 'host.refresh':
       return { state: { ...state, busy: true }, effects: [{ kind: 'host', action: 'refresh' }] };
     case 'host.stop':
@@ -551,7 +552,13 @@ export function dispatch(state: ShellState, action: UiAction, ctx: RouterContext
     case 'flight.call-rescue':
       return commandTransition(state, { kind: 'crew-order', order: 'recover', contactId: data.contact ?? null }, action);
     case 'flight.interact':
-      return commandTransition(state, { kind: 'interact', entityId: data.entity ?? '', action: 'dock' }, action);
+      return commandTransition(state, { kind: 'interact', entityId: data.entity ?? [...ctx.view.objectives]
+        .filter(objective => objective.state === 'active')
+        .sort((a, b) => {
+          const position = ctx.view.self?.ship.position ?? { x: 0, y: 0 };
+          const distance = (marker: { x: number; y: number } | null) => marker ? Math.hypot(marker.x - position.x, marker.y - position.y) : Infinity;
+          return distance(a.marker) - distance(b.marker);
+        })[0]?.id ?? '', action: 'dock' }, action);
     case 'flight.return-lobby':
       return commandTransition(state, { kind: 'return-lobby' }, action);
     case 'hud.distress':

@@ -113,7 +113,7 @@ async function boot(): Promise<void> {
     },
   });
 
-  const lan = new LanSession();
+  let lan = new LanSession();
   let active: SessionPort = lan;
 
   // Boot readiness is reported, never assumed: the shell leaves the boot screen only once every
@@ -241,7 +241,7 @@ async function boot(): Promise<void> {
     createSession: kind => {
       active = kind === 'local'
         ? new LocalSession({ storage: 'auto', campaignId: null })
-        : lan;
+        : (lan = new LanSession());
       attach(active);
       return active;
     },
@@ -285,7 +285,7 @@ async function boot(): Promise<void> {
   };
   attach(lan);
 
-  const releaseInput = attachInput(input, { element: canvasHost });
+  const releaseInput = attachInput(input, { element: canvasHost, mapAim: point => scene.aimAt(point.x, point.y, point.width, point.height) });
 
   settings.subscribe(next => {
     input.setBindings(next.controls.bindings);
@@ -318,13 +318,24 @@ async function boot(): Promise<void> {
   };
 
   let lastFrameMs = performance.now();
+  let controlsActive = false;
   let handle = 0;
   const frame = (timeMs: number): void => {
     handle = requestAnimationFrame(frame);
     const dtSeconds = Math.min(0.25, Math.max(0, (timeMs - lastFrameMs) / 1000));
     lastFrameMs = timeMs;
     scene.render(view, dtSeconds, timeMs / 1000, isPoseProvider(active) ? active.poses(dtSeconds) : undefined);
-    active.setIntent(input.intent());
+    const enabled = shell.controlsActive && !document.hidden;
+    if (enabled !== controlsActive) {
+      input.releaseAll('overlay');
+      controlsActive = enabled;
+    }
+    if (active instanceof LocalSession) active.setPaused(shell.paused);
+    if (enabled) {
+      input.pollGamepad();
+      input.setLockTarget(shell.lockedContactId);
+      active.setIntent(input.intent());
+    }
   };
   handle = requestAnimationFrame(frame);
 

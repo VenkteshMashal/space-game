@@ -30,6 +30,7 @@ import { Room } from './room.ts';
 import type { RoomOptions } from './room.ts';
 import { encodeQr, qrToText } from './qr.ts';
 import type { HostStorePort } from './store-port.ts';
+import { SqliteStore } from './persistence/sqlite-store.ts';
 
 export interface AdapterInfo {
   name: string;
@@ -184,6 +185,7 @@ export async function createHost(options: HostOptions): Promise<HostHandle> {
       observe: input => evaluateInteraction(runtime, input),
     });
   }
+  room.useBuiltInCampaign();
   const operator = new OperatorAuthority();
   // The claim is installed before the first socket can arrive, so the launcher URL is the only
   // place it ever exists.
@@ -581,6 +583,15 @@ export async function main(argv: readonly string[] = Bun.argv.slice(2), cwd = pr
 }
 
 async function startWithPortChoice(options: CliOptions): Promise<HostHandle | null> {
+  const store = new SqliteStore({ path: path.join(options.data, 'host.sqlite') });
+  const campaigns = await store.listCampaigns();
+  if (!campaigns.ok) throw new Error(campaigns.message);
+  let campaignId = campaigns.value[0]?.id;
+  if (!campaignId) {
+    const created = await store.createCampaign({ name: 'The Quiet Signal', at: new Date().toISOString() });
+    if (!created.ok) throw new Error(created.message);
+    campaignId = created.value.id;
+  }
   let port = options.port;
   for (;;) {
     try {
@@ -593,8 +604,10 @@ async function startWithPortChoice(options: CliOptions): Promise<HostHandle | nu
         joinPolicy: options.roomCode !== null ? 'code' : 'open',
         roomCode: options.roomCode,
         mode: options.mode,
+        store,
+        campaignId,
       });
-      return handle;
+      return { ...handle, stop: async () => { const result = await handle.stop(); await store.close(); return result; } };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!/EADDRINUSE|address already in use/i.test(message)) throw error;

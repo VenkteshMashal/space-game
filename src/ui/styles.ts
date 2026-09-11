@@ -128,6 +128,8 @@ export const UI_CSS = `
 .drift-ui .change-list li{display:flex;justify-content:space-between;gap:12px}
 
 /* Flight HUD */
+.drift-ui.in-flight{background:transparent;pointer-events:none}
+.drift-ui.in-flight .cta,.drift-ui.in-flight input,.drift-ui.in-flight select{pointer-events:auto}
 .drift-ui .flight{display:block;padding:0}
 .drift-ui .flight-life{position:absolute;top:8px;left:50%;transform:translateX(-50%);font-size:14px;color:var(--muted)}
 .drift-ui .hud{position:absolute;inset:0;pointer-events:none}

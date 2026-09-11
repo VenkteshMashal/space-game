@@ -121,6 +121,8 @@ export type RuntimeOptions = Omit<ShellOptions, 'root' | 'surface' | 'clock'> & 
 
 export interface Shell {
   dispose(): Promise<void>;
+  readonly controlsActive: boolean;
+  readonly paused: boolean;
   /**
    * Binding-driven action from the input router (`ActionId` values from `src/input/bindings.ts`
    * are accepted as plain strings so the shell keeps no build dependency on the input module).

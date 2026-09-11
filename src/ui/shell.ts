@@ -101,9 +101,11 @@ class DriftShell implements ShellRuntime {
   private lastPhase: ClientView['phase'] = null;
   private wasOnline = false;
   private lastBlocker: string | null = null;
+  private transport: 'lan' | 'local' | null;
 
   constructor(options: RuntimeOptions) {
     this.options = options;
+    this.transport = options.transport ?? null;
     this.session = options.session;
     this.surface = options.surface;
     this.clock = options.clock;
@@ -130,6 +132,14 @@ class DriftShell implements ShellRuntime {
   get lastEffects(): readonly Effect[] { return this.effects; }
   get hudFlushes(): number { return this.hudWriter.flushCount; }
   get frameLoopRunning(): boolean { return this.loopRunning; }
+  get controlsActive(): boolean {
+    return this.state.screen === 'flight' && this.state.overlay === 'none' && !this.state.confirm
+      && this.view.link === 'online' && this.view.self?.ship.life === 'alive'
+      && (this.view.phase === 'live' || this.view.phase === 'extraction');
+  }
+  get paused(): boolean {
+    return this.authority.transport === 'local' && (this.state.overlay !== 'none' || this.state.confirm !== null);
+  }
 
   dispatch(action: UiAction): Transition {
     if (this.disposed) return { state: this.stateValue, effects: [] };
@@ -295,7 +305,7 @@ class DriftShell implements ShellRuntime {
   private onView(view: ClientView): void {
     if (this.disposed) return;
     this.viewValue = view;
-    this.authorityValue = authorityOf(view, this.options.transport ?? null);
+    this.authorityValue = authorityOf(view, this.transport);
     this.resetEpochIfNeeded(view);
     this.releaseOnChange();
     this.followAuthority(view);
@@ -429,6 +439,7 @@ class DriftShell implements ShellRuntime {
   }
 
   private async runConnect(options: ConnectOptions): Promise<void> {
+    this.transport = options.transport;
     // A factory defers adapter construction until the pilot actually asks for it. Anything that
     // throws in here — the factory itself, an attach, or an adapter that cannot answer `view()`
     // before it is connected — is reported as a typed failure rather than leaving the pilot with a
@@ -436,6 +447,11 @@ class DriftShell implements ShellRuntime {
     if (this.options.createSession) {
       try {
         const created = this.options.createSession(options.transport);
+        const previous = this.session;
+        if (previous !== created) {
+          this.scope.abortConnect();
+          await previous.dispose();
+        }
         this.session = created;
         this.scope.attach(created, this.listeners);
         this.epoch = created.view().epoch;
@@ -551,16 +567,45 @@ export function fieldValueReader(element: HTMLElement): FieldEdit | null {
   return id ? { fieldId: id, value } : null;
 }
 
-/** Browser surface: one innerHTML replace per screen render, plus the isolated HUD region. */
+/** Update existing nodes so telemetry cannot detach a pressed button or an active text field. */
+function patchMarkup(root: Element, markup: string): void {
+  const template = root.ownerDocument.createElement('template');
+  template.innerHTML = markup;
+  const sync = (parent: Node, next: Node): void => {
+    const desired = Array.from(next.childNodes);
+    desired.forEach((fresh, index) => {
+      const old = parent.childNodes[index];
+      if (!old) { parent.appendChild(fresh.cloneNode(true)); return; }
+      const a = old instanceof Element ? old : null;
+      const b = fresh instanceof Element ? fresh : null;
+      if (old.nodeType !== fresh.nodeType || (a && b && (a.tagName !== b.tagName || a.getAttribute('data-action') !== b.getAttribute('data-action')))) {
+        parent.replaceChild(fresh.cloneNode(true), old); return;
+      }
+      if (a && b) {
+        for (const attr of Array.from(a.attributes)) if (!b.hasAttribute(attr.name)) a.removeAttribute(attr.name);
+        for (const attr of Array.from(b.attributes)) if (a.getAttribute(attr.name) !== attr.value) a.setAttribute(attr.name, attr.value);
+        sync(a, b);
+      } else if (old.nodeValue !== fresh.nodeValue) old.nodeValue = fresh.nodeValue;
+    });
+    while (parent.childNodes.length > desired.length) parent.removeChild(parent.lastChild!);
+  };
+  sync(root, template.content);
+}
+
+/** Browser surface with persistent controls and a separately updated HUD. */
 export function domSurface(root: HTMLElement): Surface {
   const doc = root.ownerDocument;
+  let lastMarkup = '';
   return {
     render: markup => {
-      root.innerHTML = markup;
+      if (markup === lastMarkup) return;
+      lastMarkup = markup;
+      patchMarkup(root, markup);
+      root.classList.toggle('in-flight', root.querySelector('.screen.flight') !== null);
     },
     writeHud: markup => {
       const region = root.querySelector('[data-hud-region]');
-      if (region) region.innerHTML = markup;
+      if (region) patchMarkup(region, markup);
     },
     captureFocus: () => {
       const active = doc.activeElement;
@@ -695,6 +740,14 @@ export function createShell(options: ShellOptions): Shell {
     cycleLock: direction => runtime.cycleLock(direction),
     get lockedContactId() {
       return runtime.lockedContactId;
+    },
+    get controlsActive() {
+      return runtime.state.screen === 'flight' && runtime.state.overlay === 'none' && !runtime.state.confirm
+        && runtime.view.link === 'online' && runtime.view.self?.ship.life === 'alive'
+        && (runtime.view.phase === 'live' || runtime.view.phase === 'extraction');
+    },
+    get paused() {
+      return runtime.authority.transport === 'local' && (runtime.state.overlay !== 'none' || runtime.state.confirm !== null);
     },
   };
 }

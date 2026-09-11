@@ -9,10 +9,12 @@
 
 import { chromium } from '@playwright/test';
 import { spawn } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import assert from 'node:assert/strict';
 
-const BUN = process.env.BUN_PATH ?? 'C:/Users/sahil/AppData/Roaming/npm/node_modules/bun/bin/bun.exe';
+const BUN = process.env.BUN_PATH ?? 'bun';
 const CHROME = process.env.CHROME_PATH ?? 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 const PORT = Number(process.env.PORT ?? 8099);
 
@@ -26,7 +28,7 @@ let browser = null;
 /** Wait for the host's startup banner and take the operator URL, fragment included. */
 function startHost() {
   return new Promise((resolve, reject) => {
-    const child = spawn(BUN, ['src/server/serve.ts', '--port', String(PORT)], { cwd: process.cwd() });
+    const child = spawn(BUN, ['src/server/serve.ts', '--port', String(PORT), '--mode', 'team-deathmatch', '--data', mkdtempSync(join(tmpdir(), 'drift-lan-check-'))], { cwd: process.cwd(), windowsHide: true });
     hostProcess = child;
     let output = '';
     const finish = (error, value) => {
@@ -45,6 +47,7 @@ function startHost() {
       output += String(chunk);
     });
     child.on('exit', code => finish(new Error(`host exited with ${code}:\n${output.slice(-600)}`)));
+    child.on('error', error => finish(error));
   });
 }
 
@@ -216,6 +219,15 @@ try {
   }
   assert.equal(results.epochs.guest, results.epochs.operator, `pilots are in different matches (${JSON.stringify(results.epochs)})`);
   assert.equal(typeof results.epochs.operator === 'string' && results.epochs.operator.length > 0, true, 'no match epoch was reported');
+  await operator.page.waitForFunction(() => window.__DRIFT__?.view().phase === 'live');
+  await operator.page.bringToFront();
+  await operator.page.mouse.click(600, 350);
+  const beforeFlight = await operator.page.evaluate(() => { const v = window.__DRIFT__.view(); return { pilotId: v.pilotId, fuel: v.self.predictionState.fuelKg, position: v.self.ship.position }; });
+  await operator.page.keyboard.down('KeyW');
+  await operator.page.waitForFunction(fuel => window.__DRIFT__.view().self.predictionState.fuelKg < fuel - 0.01, beforeFlight.fuel);
+  await operator.page.keyboard.up('KeyW');
+  await guest.page.waitForFunction(before => { const ship = window.__DRIFT__.view().ships.find(s => s.pilotId === before.pilotId); return ship && Math.hypot(ship.position.x - before.position.x, ship.position.y - before.position.y) > 0.1; }, beforeFlight);
+  results.steps.push('Keyboard thrust consumed fuel and moved the same ship on the guest');
 
   const crews = {};
   for (const side of [operator, guest]) {

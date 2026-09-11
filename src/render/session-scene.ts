@@ -660,6 +660,13 @@ export class SessionScene implements ScenePort {
     return this.camera.project(point);
   }
 
+  aimAt(x: number, y: number, width: number, height: number): Vec2 | null {
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(new THREE.Vector2(x / width * 2 - 1, 1 - y / height * 2), this.camera.camera);
+    const point = ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 0, 1), 0), new THREE.Vector3());
+    return point ? { x: point.x, y: point.y } : null;
+  }
+
   render(view: ClientView, dtSeconds: number, timeSeconds: number, poses?: PoseOverrides): void {
     if (this.disposed) return;
     this.view = view;

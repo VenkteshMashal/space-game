@@ -178,6 +178,20 @@ async function checkViewport(viewport) {
     record.screens.push('lobby');
     assert.equal(await launchOfflineMatch(page), true, `${viewport.name}: the offline lobby would not launch`);
     await waitForScreen(page, 'flight', 60000);
+    await page.waitForFunction(() => window.__DRIFT__?.view().phase === 'live');
+    assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('#drift-ui-root')).backgroundColor), 'rgba(0, 0, 0, 0)', 'Flight UI hides the game canvas');
+    assert.equal(await page.evaluate(() => window.__DRIFT__.view().ships.length >= 3), true, 'Offline skirmish has no opponents');
+    if (viewport.name === 'desktop') {
+      await page.mouse.click(viewport.width / 2, viewport.height / 2);
+      const before = await page.evaluate(() => window.__DRIFT__.view().self.predictionState.fuelKg);
+      await page.keyboard.down('KeyW');
+      await page.waitForFunction(fuel => window.__DRIFT__.view().self.predictionState.fuelKg < fuel, before);
+      await page.keyboard.up('KeyW');
+      const ammo = await page.evaluate(() => window.__DRIFT__.view().weapons.reduce((sum, w) => sum + (w.magazine ?? 0), 0));
+      await page.mouse.down();
+      await page.waitForFunction(ammo => window.__DRIFT__.view().weapons.reduce((sum, w) => sum + (w.magazine ?? 0), 0) < ammo, ammo);
+      await page.mouse.up();
+    }
     record.screens.push('flight');
     const hud = await page.evaluate(() => ({
       regions: ['root', 'instruments', 'radar'].filter(region => document.querySelector(`[data-hud="${region}"]`)),
@@ -195,6 +209,9 @@ async function checkViewport(viewport) {
     await page.keyboard.press('KeyP');
     await page.waitForTimeout(300);
     assert.equal((await mirror(page))?.overlay, 'menu', `${viewport.name}: the menu key did not open the menu`);
+    const pausedTick = await page.evaluate(() => window.__DRIFT__.view().tick);
+    await page.waitForTimeout(350);
+    assert.equal(await page.evaluate(() => window.__DRIFT__.view().tick), pausedTick, 'Offline pause did not stop simulation');
     await page.keyboard.press('Escape');
     await page.waitForTimeout(300);
     assert.equal((await mirror(page))?.overlay, 'none', `${viewport.name}: Escape did not close one layer`);

@@ -21,6 +21,8 @@
  */
 
 import { PVP, RULES } from '../shared/balance.ts';
+import { campaignSource } from '../sim/campaign/source.ts';
+import { defaultFit } from '../shared/catalog.ts';
 import type {
   CampaignView, ClientView, Command, CommandCode, CommandResult, DebriefView, DerivedFit, HostInfo, HostView, Id, InputFrame,
   InputReceipt, LobbyView, Mode, ObjectiveView, Phase, PredictionState, SelfAuthority, SessionEvent,
@@ -108,6 +110,8 @@ export interface InteractionFacts {
 
 /** Anything the room can call to advance campaign objectives; `serve.ts` wires the real runtime. */
 export interface CampaignSource {
+  outcome?(): 'in-progress' | 'mission-complete' | 'mission-failed';
+  decisions?(): readonly { decisionId: Id; optionId: Id }[];
   viewObjectives(): readonly ObjectiveView[];
   advance(tick: number): void;
   commitDecision(decisionId: Id, optionId: Id): { committed: boolean; code: string };
@@ -221,6 +225,7 @@ export class Room {
   private readonly store: HostStorePort | null;
   private readonly campaignId: Id | null;
   private campaignSource: CampaignSource | null = null;
+  private builtInCampaign = true;
   /** Objectives a pilot is holding an interaction on, so sustained work can be fed each tick. */
   private readonly interactions = new Map<Id, { objectiveId: Id; itemId: Id | null }>();
   /** Last published objective progress, so a completion reaches the clients instead of staying local. */
@@ -310,8 +315,11 @@ export class Room {
 
   /** Wire the campaign runtime once `src/sim/campaign` lands; no second rules implementation. */
   attachCampaign(source: CampaignSource): void {
+    this.builtInCampaign = false;
     this.campaignSource = source;
   }
+
+  useBuiltInCampaign(): void { this.builtInCampaign = true; }
 
   /**
    * Apply a host-screen setting to the room before anyone is seated (B2). This is the operator's own
@@ -326,7 +334,7 @@ export class Room {
         // A campaign has to exist before the room can run one; the title screen creates it.
         return { ok: false, code: 'denied', revision: this.lobby.revision };
       }
-      this.lobby.mode = patch.mode;
+      editLobby(this.lobby, this.lobby.captainId, { mode: patch.mode });
       this.lobby.missionId = patch.mode === 'campaign' ? this.lobby.missionId ?? CAMPAIGN_MISSIONS[0]!.id : null;
     }
     if (patch.joinPolicy) this.lobby.joinPolicy = patch.joinPolicy;
@@ -1016,6 +1024,13 @@ export class Room {
   // -------------------------------------------------------------------------------------------
 
   private launch(): void {
+    if (this.lobby.mode === 'campaign' && this.builtInCampaign) {
+      const id = this.lobby.missionId ?? CAMPAIGN_MISSIONS[0]!.id;
+      this.lobby.missionId = id;
+      this.lobby.mapId = missionDefinition(id)?.sectorId ?? this.lobby.mapId;
+      this.campaignSource = campaignSource(id, this.seed);
+      this.interactions.clear();
+    } else if (this.lobby.mode !== 'campaign') this.campaignSource = null;
     this.epochCounter += 1;
     this.epoch = `${this.roomId}-e${this.epochCounter}`;
     const teams = this.lobby.mode === 'team-deathmatch' ? PVP_TEAMS : [TEAM_CREW, TEAM_HOSTILE];
@@ -1035,6 +1050,8 @@ export class Room {
     if (this.lobby.mode === 'campaign') {
       const mission = missionDefinition(this.lobby.missionId ?? CAMPAIGN_MISSIONS[0]!.id);
       if (mission) createMission(this.world, mission);
+    } else if (this.lobby.mode === 'skirmish') {
+      for (let index = 0; index < 2; index++) addPilot(this.world, { pilotId: `raider-${index}`, name: `Cinder ${index + 1}`, teamId: TEAM_HOSTILE, fit: defaultFit('needle'), isBot: true });
     }
     this.phase = 'loading';
     this.phaseEndsAtTick = this.roomTick + RULES.loadingDeadlineS * RELEASE.physicsHz;
@@ -1071,13 +1088,24 @@ export class Room {
     this.resultReceipt = `${this.epoch}:result`;
     this.debrief = this.buildDebrief();
     this.broadcastMeta();
-    await this.saveNow();
+    if (!(await this.saveNow())) { this.settling = false; this.broadcastMeta(); return; }
+    if (this.store && this.campaignId && this.world?.result?.outcome === 'mission-complete') {
+      const reward = this.campaignSource?.settlement();
+      const saved = await this.store.settle({ campaignId: this.campaignId, resultId: `mission:${this.lobby.missionId}`,
+        rewardCredits: reward?.rewardCredits ?? 0, repairCredits: 0,
+        objectiveReceipts: [{ objectiveId: this.lobby.missionId!, itemId: 'complete' }], decisions: this.campaignSource?.decisions?.() ?? [] });
+      if (!saved.ok) { this.saveState = 'failed'; this.settling = false; this.broadcastMeta(); return; }
+      if (this.debrief) this.debrief.receiptId = saved.value.receiptId;
+      this.campaign = null;
+      await this.hydrateCampaign();
+    }
     this.phase = 'debrief';
     this.settling = false;
     this.broadcastMeta();
   }
 
   private returnToLobby(): void {
+    if (this.debrief?.outcome === 'mission-complete' && this.debrief.nextMissionId) this.lobby.missionId = this.debrief.nextMissionId;
     this.world = null;
     this.epoch = null;
     this.phase = 'lobby';
@@ -1109,10 +1137,10 @@ export class Room {
         departed: tally.departed,
       }))
       : [];
-    const settlement = this.lobby.mode === 'campaign' ? this.campaignSource?.settlement() ?? null : null;
+    const settlement = result?.outcome === 'mission-complete' ? this.campaignSource?.settlement() ?? null : null;
     return {
       resultId: this.resultReceipt ?? `${this.epoch}:result`,
-      outcome: result?.outcome ?? (this.lobby.mode === 'campaign' ? 'mission-complete' : 'no-contest'),
+      outcome: result?.outcome ?? (this.lobby.mode === 'campaign' ? 'mission-failed' : 'no-contest'),
       winningTeamId: result?.winningTeamId ?? null,
       rewardCredits: settlement?.rewardCredits ?? 0,
       repairCredits: 0,
@@ -1228,6 +1256,10 @@ export class Room {
       this.drainWorldEvents();
       this.feedInteractions();
       this.campaignSource?.advance(this.worldTick);
+      const campaignOutcome = this.campaignSource?.outcome?.();
+      if (this.world && campaignOutcome && campaignOutcome !== 'in-progress') {
+        this.world.result = { outcome: campaignOutcome, winningTeamId: campaignOutcome === 'mission-complete' ? TEAM_CREW : null };
+      }
       // Objective progress rides the view, so a completion (or a timed hold finishing) has to be
       // published; checked a few times a second rather than every tick to keep the loop allocation-free.
       if (this.roomTick % 6 === 0) this.publishObjectivesIfChanged();
@@ -1342,7 +1374,6 @@ export class Room {
       // Bun already queued bytes it will not let us replace; stop sending until `drain`.
       session.socketBufferedBytes += bytes.length;
       if (session.congestedSinceTick === null) session.congestedSinceTick = this.roomTick;
-      session.unsentSnapshot = bytes;
       return;
     }
     if (status === 0 || session.socketBufferedBytes + bytes.length > RULES.socketBufferBytes) {
@@ -1356,9 +1387,13 @@ export class Room {
     while (session.pendingCritical.length > 0) {
       const bytes = session.pendingCritical[0]!;
       const status = session.socket.sendBinary(bytes);
-      if (status === -1) return;
       session.pendingCritical.shift();
       session.pendingCriticalBytes -= bytes.length;
+      if (status === -1) {
+        session.socketBufferedBytes += bytes.length;
+        session.congestedSinceTick ??= this.roomTick;
+        return;
+      }
       if (status === 0) {
         session.socket.close(CLOSE.slowClient, 'slow-client-buffer');
         this.detach(session.socket.connectionId);
@@ -1668,11 +1703,11 @@ export class Room {
   campaignView(): CampaignView | null {
     if (!this.campaignId) return null;
     const snapshot = this.campaign;
-    const receipts = new Set((snapshot?.receipts ?? []).map(receipt => receipt.receiptId));
+    const receipts = new Set((snapshot?.receipts ?? []).flatMap(receipt => [receipt.receiptId, receipt.objectiveId]));
     let unlockedNext = false;
     const missions = CAMPAIGN_MISSIONS.map((mission, index) => {
-      const complete = receipts.has(mission.receiptId);
-      const previousComplete = index === 0 || receipts.has(CAMPAIGN_MISSIONS[index - 1]!.receiptId);
+      const complete = receipts.has(mission.receiptId) || receipts.has(mission.id);
+      const previousComplete = index === 0 || receipts.has(CAMPAIGN_MISSIONS[index - 1]!.receiptId) || receipts.has(CAMPAIGN_MISSIONS[index - 1]!.id);
       const available = !complete && previousComplete && !unlockedNext;
       if (available) unlockedNext = true;
       return { id: mission.id, title: mission.title, sectorId: mission.sectorId, state: complete ? 'complete' as const : available ? 'available' as const : 'locked' as const };
