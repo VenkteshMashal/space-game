@@ -40,4 +40,26 @@ export class FlightAudio {
     tone.start(); tone.stop(this.context.currentTime + 0.3);
     tone.onended = () => { tone.disconnect(); volume.disconnect(); };
   }
+
+  shot(kind: 'kinetic' | 'beam' | 'missile') {
+    if (kind === 'kinetic') this.burst(320, 90, 0.12, 0.05, 'square');
+    else if (kind === 'beam') this.burst(210, 190, 0.1, 0.03, 'sawtooth');
+    else this.burst(150, 60, 0.45, 0.04, 'triangle');
+  }
+
+  boom() { this.burst(95, 26, 0.5, 0.09, 'sawtooth'); }
+
+  private burst(start: number, end: number, seconds: number, volume: number, type: OscillatorType) {
+    if (!this.enabled || !this.context) return;
+    const tone = this.context.createOscillator();
+    const gain = this.context.createGain();
+    tone.type = type;
+    tone.frequency.setValueAtTime(start, this.context.currentTime);
+    tone.frequency.exponentialRampToValueAtTime(Math.max(20, end), this.context.currentTime + seconds);
+    gain.gain.setValueAtTime(volume, this.context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, this.context.currentTime + seconds);
+    tone.connect(gain); gain.connect(this.context.destination);
+    tone.start(); tone.stop(this.context.currentTime + seconds);
+    tone.onended = () => { tone.disconnect(); gain.disconnect(); };
+  }
 }
