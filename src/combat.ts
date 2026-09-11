@@ -16,6 +16,7 @@ export type WeaponSpec = {
   heat: number;     // drive heat added per shot (per second for a beam)
   draw: number;     // propellant per shot (per second for a beam)
   arc: number;      // radians of traverse off the hull axis; 0 = fixed forward
+  traverseRate?: number; // maximum mount slew in radians per second
   rockBonus: number;// damage multiplier vs asteroids — mining tools are poor anti-ship guns
   mass: number; cost: number;
 };
@@ -26,6 +27,9 @@ export const WEAPONS: Record<string, WeaponSpec> = {
   gauss:  { id: 'gauss',  name: 'Gauss lance',      kind: 'kinetic', damage: 130, rof: 0.42, speed: 1400, range: 2200, spread: 0.001, heat: 0.110, draw: 14,  arc: 0.08, rockBonus: 1.6, mass: 6200, cost: 7400 },
   cutter: { id: 'cutter', name: 'Mining cutter',    kind: 'beam',    damage: 46,  rof: 0,    speed: 0,    range: 210,  spread: 0,     heat: 0.340, draw: 9,   arc: 0.50, rockBonus: 3.2, mass: 2100, cost: 1800 },
   swarm:  { id: 'swarm',  name: 'Swarm rack',       kind: 'missile', damage: 85,  rof: 0.7,  speed: 240,  range: 1800, spread: 0.120, heat: 0.020, draw: 4,   arc: 1.20, rockBonus: 0.6, mass: 2800, cost: 4100 },
+  pdc:    { id: 'pdc',    name: 'Rotary PD cannon',  kind: 'kinetic', damage: 6,   rof: 18,   speed: 760, range: 700,  spread: 0.085, heat: 0.003, draw: 0.55, arc: Math.PI, rockBonus: 0.65, mass: 1050, cost: 1500, traverseRate: 7.5 },
+  torpedo:{ id: 'torpedo',name: 'Heavy torpedo',     kind: 'missile', damage: 220, rof: 0.25, speed: 180, range: 3200, spread: 0.035, heat: 0.060, draw: 12,   arc: 1.35, rockBonus: 0.75, mass: 5200, cost: 7800, traverseRate: 2.6 },
+  plasma: { id: 'plasma', name: 'Plasma mining beam', kind: 'beam',    damage: 150, rof: 0,    speed: 0,   range: 360,  spread: 0,     heat: 0.620, draw: 17,   arc: 0.60, rockBonus: 4.8, mass: 4800, cost: 6400, traverseRate: 3.8 },
 };
 
 const WEAPON_MUZZLE_OFFSETS: Record<WeaponKind, number> = {
@@ -57,16 +61,20 @@ export class Rounds {
   readonly maxSpeed = new Float32Array(MAX_ROUNDS);
   readonly faction = new Uint8Array(MAX_ROUNDS);
   readonly target: (ShipState | undefined)[] = new Array(MAX_ROUNDS);
-  private cursor = 0;
+  private cursor: number = 0;
 
   spawn(x: number, y: number, vx: number, vy: number, spec: WeaponSpec, faction: Faction) {
     const i = this.cursor;
     this.cursor = (this.cursor + 1) % MAX_ROUNDS;
-    this.x[i] = x; this.y[i] = y; this.vx[i] = vx; this.vy[i] = vy;
+    this.x[i] = x; this.y[i] = y;
+    const maxSpeed = spec.kind === 'missile' ? spec.speed * 1.35 : 0;
+    const velocity = Math.hypot(vx, vy);
+    const velocityScale = maxSpeed > 0 && velocity > maxSpeed ? maxSpeed / velocity : 1;
+    this.vx[i] = vx * velocityScale; this.vy[i] = vy * velocityScale;
     this.life[i] = spec.range / spec.speed;
     this.damage[i] = spec.damage; this.bonus[i] = spec.rockBonus; this.faction[i] = faction;
     this.kind[i] = spec.kind === 'missile' ? 1 : 0;
-    this.maxSpeed[i] = spec.kind === 'missile' ? spec.speed * 1.35 : 0;
+    this.maxSpeed[i] = maxSpeed;
     this.target[i] = undefined;
   }
 }
@@ -75,12 +83,31 @@ export type Mount = { spec: WeaponSpec; lx: number; ly: number; cooldown: number
 
 /** The Kestrel model already carries point-defence housings at (+/-10 * wide, 9, 15). Mount there. */
 export const STOCK_MOUNTS: Record<ShipClass, { weapon: string; lx: number; ly: number }[]> = {
-  kestrel: [{ weapon: 'ac20', lx: -10, ly: 9 }, { weapon: 'ac20', lx: 10, ly: 9 }],
+  kestrel: [
+    { weapon: 'ac20', lx: -10, ly: 9 }, { weapon: 'ac20', lx: 10, ly: 9 },
+    { weapon: 'cutter', lx: 0, ly: -4 }, { weapon: 'swarm', lx: 0, ly: 17 },
+  ],
   mule:    [{ weapon: 'ac70', lx: 0, ly: 16 }, { weapon: 'cutter', lx: 0, ly: -4 }],
-  needle:  [{ weapon: 'ac20', lx: -7, ly: 14 }, { weapon: 'ac20', lx: 7, ly: 14 }, { weapon: 'gauss', lx: 0, ly: 6 }],
+  needle:  [{ weapon: 'ac20', lx: -7, ly: 14 }, { weapon: 'ac20', lx: 7, ly: 14 }, { weapon: 'gauss', lx: 0, ly: 6 }, { weapon: 'torpedo', lx: 0, ly: 18 }],
 };
 
 export const wrapAngle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
+
+/** Maximum slew rate for mounts that do not specify their own traverse speed. */
+export const TURRET_TRAVERSE_RATE = 4.8;
+
+export type MountWorldPose = { x: number; y: number; bearing: number; muzzleX: number; muzzleY: number };
+
+/** World-space mount and muzzle coordinates used by simulation and presentation code. */
+export function mountWorldPose(state: ShipState, mount: Mount, scale = 1): MountWorldPose {
+  const cos = Math.cos(state.angle), sin = Math.sin(state.angle);
+  const hullBearing = state.angle + Math.PI / 2;
+  const x = state.position.x + (mount.lx * cos - mount.ly * sin) * scale;
+  const y = state.position.y + (mount.lx * sin + mount.ly * cos) * scale;
+  const bearing = hullBearing + mount.bearing;
+  const muzzle = muzzleOffset(mount.spec) * scale;
+  return { x, y, bearing, muzzleX: x + Math.cos(bearing) * muzzle, muzzleY: y + Math.sin(bearing) * muzzle };
+}
 
 function missileTarget(rounds: Rounds, index: number, targets: readonly { state: ShipState; faction: Faction }[]): ShipState | undefined {
   const faction = rounds.faction[index] as Faction;
@@ -107,10 +134,10 @@ function guideMissile(rounds: Rounds, index: number, targets: readonly { state: 
   if (!target) return;
   const speed = Math.hypot(rounds.vx[index], rounds.vy[index]);
   if (speed < 1e-6) return;
-  const dx = target.position.x - rounds.x[index], dy = target.position.y - rounds.y[index];
-  const range = Math.hypot(dx, dy);
-  const lead = Math.min(3, range / speed);
-  const wanted = Math.atan2(dy + target.velocity.y * lead, dx + target.velocity.x * lead);
+  const wantedPoint = interceptPoint(
+    { x: rounds.x[index], y: rounds.y[index] }, target.position, target.velocity, speed, 3,
+  );
+  const wanted = Math.atan2(wantedPoint.y - rounds.y[index], wantedPoint.x - rounds.x[index]);
   const current = Math.atan2(rounds.vy[index], rounds.vx[index]);
   const turn = clamp(wrapAngle(wanted - current), -1.8 * dt, 1.8 * dt);
   const next = current + turn;
@@ -123,8 +150,16 @@ function guideMissile(rounds: Rounds, index: number, targets: readonly { state: 
 export function fireMounts(
   mounts: Mount[], state: ShipState, aim: Vec2, trigger: boolean, rounds: Rounds,
   faction: Faction, scale: number, dt: number,
-  onShot?: (mx: number, my: number, angle: number, spec: WeaponSpec) => void,
+  onShotOrMissileTrigger?: ((mx: number, my: number, angle: number, spec: WeaponSpec) => void) | boolean,
+  missileTrigger?: boolean,
 ) {
+  const onShot = typeof onShotOrMissileTrigger === 'function' ? onShotOrMissileTrigger : undefined;
+  // A missing missile trigger is the old API: the primary trigger applies to every mount.
+  // Supplying it splits one pass into primary and missile groups without stepping cooldowns twice.
+  const missileFire = typeof onShotOrMissileTrigger === 'boolean'
+    ? onShotOrMissileTrigger
+    : missileTrigger;
+  const legacyTrigger = missileFire === undefined;
   const cos = Math.cos(state.angle), sin = Math.sin(state.angle);
   // stepShip's forward is (-sin, cos): the hull axis is angle + PI/2 in world bearing terms.
   const hullBearing = state.angle + Math.PI / 2;
@@ -133,13 +168,21 @@ export function fireMounts(
     const mx = state.position.x + (mount.lx * cos - mount.ly * sin) * scale;
     const my = state.position.y + (mount.lx * sin + mount.ly * cos) * scale;
     const wanted = Math.atan2(aim.y - my, aim.x - mx);
-    const offset = clamp(wrapAngle(wanted - hullBearing), -mount.spec.arc, mount.spec.arc);
-    mount.bearing = offset;                       // the model reads this to swing the barrel
+    const desired = clamp(wrapAngle(wanted - hullBearing), -mount.spec.arc, mount.spec.arc);
+    const current = Number.isFinite(mount.bearing) ? clamp(mount.bearing, -mount.spec.arc, mount.spec.arc) : 0;
+    const error = wrapAngle(desired - current);
+    const slewRate = Math.max(0, Math.min(TURRET_TRAVERSE_RATE, mount.spec.traverseRate ?? TURRET_TRAVERSE_RATE));
+    const slew = slewRate * Math.max(0, dt);
+    // The proportional term gives a responsive mount while slew caps preserve deterministic motion.
+    mount.bearing = clamp(current + clamp(error * 6, -slew, slew), -mount.spec.arc, mount.spec.arc);
     if (mount.spec.kind === 'beam') continue;     // beams are continuous, see 1.8
-    if (!trigger || mount.cooldown > 0) continue;
+    const canTrigger = mount.spec.kind === 'missile'
+      ? (legacyTrigger ? trigger : missileFire === true)
+      : trigger;
+    if (!canTrigger || mount.cooldown > 0) continue;
     if (state.fuel < mount.spec.draw || state.heat > 0.98) continue;
 
-    const angle = hullBearing + offset + (Math.random() - 0.5) * 2 * mount.spec.spread;
+    const angle = hullBearing + mount.bearing + (Math.random() - 0.5) * 2 * mount.spec.spread;
     const muzzle = muzzleOffset(mount.spec) * scale;
     const shotX = mx + Math.cos(angle) * muzzle;
     const shotY = my + Math.sin(angle) * muzzle;
@@ -218,35 +261,41 @@ export function stepRounds(rounds: Rounds, grid: SpatialGrid, targets: { state: 
   return hits;
 }
 
-export type BeamHit = { mount: Mount; x: number; y: number; ex: number; ey: number; rock?: Obstacle; destroyed: boolean };
+export type BeamHit = { mount: Mount; x: number; y: number; ex: number; ey: number; rock?: Obstacle; blocked?: boolean; destroyed: boolean };
 
-export function stepBeams(mounts: Mount[], state: ShipState, grid: SpatialGrid, trigger: boolean, scale: number, dt: number): BeamHit[] {
+export function stepBeams(
+  mounts: Mount[], state: ShipState, grid: SpatialGrid, trigger: boolean, scale: number, dt: number,
+  bodies: readonly SolidBody[] = [],
+): BeamHit[] {
   const out: BeamHit[] = [];
   const nearby: Obstacle[] = [];
-  const cos = Math.cos(state.angle), sin = Math.sin(state.angle);
-  const hullBearing = state.angle + Math.PI / 2;
   for (const mount of mounts) {
     if (mount.spec.kind !== 'beam' || !trigger) continue;
     if (state.fuel < mount.spec.draw * dt || state.heat > 0.99) continue;
-    const angle = hullBearing + mount.bearing;
-    const mountX = state.position.x + (mount.lx * cos - mount.ly * sin) * scale;
-    const mountY = state.position.y + (mount.lx * sin + mount.ly * cos) * scale;
-    const muzzle = muzzleOffset(mount.spec) * scale;
-    const mx = mountX + Math.cos(angle) * muzzle;
-    const my = mountY + Math.sin(angle) * muzzle;
+    const pose = mountWorldPose(state, mount, scale);
+    const angle = pose.bearing;
+    const mx = pose.muzzleX, my = pose.muzzleY;
     const dx = Math.cos(angle), dy = Math.sin(angle);
 
-    // 12 samples over a 210 m beam is a 17 m step — finer than the smallest rock we let survive.
-    let hitRock: Obstacle | undefined, ex = mx + dx * mount.spec.range, ey = my + dy * mount.spec.range;
-    for (let s = 1; s <= 12 && !hitRock; s++) {
-      const px = mx + dx * mount.spec.range * (s / 12), py = my + dy * mount.spec.range * (s / 12);
-      grid.near(px, py, nearby);
-      for (const rock of nearby) {
-        if (rock.z !== 0 || rock.hp <= 0) continue;
-        if (Math.hypot(px - rock.x, py - rock.y) > rock.radius * 0.95) continue;
-        hitRock = rock; ex = px; ey = py; break;
-      }
+    const endX = mx + dx * mount.spec.range, endY = my + dy * mount.spec.range;
+    let bestT = Infinity;
+    let hitRock: Obstacle | undefined;
+    let blocked = false;
+    // Sweep the complete beam once, then choose the nearest entry point among all candidates.
+    grid.nearSegment(mx, my, endX, endY, nearby);
+    for (const rock of nearby) {
+      if (rock.z !== 0 || rock.hp <= 0) continue;
+      const t = segmentCircleHit(mx, my, endX, endY, rock);
+      if (t !== undefined && t < bestT) { bestT = t; hitRock = rock; blocked = false; }
     }
+    for (const body of bodies) {
+      const t = body.kind === 'circle'
+        ? segmentCircleHit(mx, my, endX, endY, body)
+        : segmentBoxHit(mx, my, endX, endY, solidBodyBox(body));
+      if (t !== undefined && t < bestT) { bestT = t; hitRock = undefined; blocked = true; }
+    }
+    const ex = bestT < Infinity ? mx + (endX - mx) * bestT : endX;
+    const ey = bestT < Infinity ? my + (endY - my) * bestT : endY;
     state.fuel = Math.max(0, state.fuel - mount.spec.draw * dt);
     state.heat = clamp(state.heat + mount.spec.heat * dt, 0, 1);
     let destroyed = false;
@@ -254,7 +303,7 @@ export function stepBeams(mounts: Mount[], state: ShipState, grid: SpatialGrid, 
       hitRock.hp -= mount.spec.damage * mount.spec.rockBonus * dt;
       destroyed = hitRock.hp <= 0;
     }
-    out.push({ mount, x: mx, y: my, ex, ey, rock: hitRock, destroyed });
+    out.push({ mount, x: mx, y: my, ex, ey, rock: hitRock, blocked: blocked || undefined, destroyed });
   }
   return out;
 }
@@ -309,12 +358,36 @@ export function createHostile(id: number, kind: HostileKind, position: Vec2): Ho
   };
 }
 
-/** Where to shoot so a round at `speed` meets a target moving at `tv`. One iteration is plenty at these ranges. */
-function leadPoint(from: Vec2, target: Vec2, tv: Vec2, speed: number): Vec2 {
-  const range = Math.hypot(target.x - from.x, target.y - from.y);
-  const t = range / speed;
-  return { x: target.x + tv.x * t, y: target.y + tv.y * t };
+/** Returns a leading point for a projectile intercept, with a direct-aim fallback. */
+export function interceptPoint(from: Vec2, target: Vec2, targetVelocity: Vec2, speed: number, maxTime = Infinity): Vec2 {
+  const rx = target.x - from.x, ry = target.y - from.y;
+  const distance = Math.hypot(rx, ry);
+  if (distance < 1e-9 || speed <= 1e-9) return { x: target.x, y: target.y };
+
+  const vv = targetVelocity.x * targetVelocity.x + targetVelocity.y * targetVelocity.y;
+  const rv = rx * targetVelocity.x + ry * targetVelocity.y;
+  const a = vv - speed * speed;
+  const b = 2 * rv;
+  const c = distance * distance;
+  let time = Infinity;
+  if (Math.abs(a) < 1e-9) {
+    if (b < -1e-9) time = -c / b;
+  } else {
+    const discriminant = b * b - 4 * a * c;
+    if (discriminant >= 0) {
+      const root = Math.sqrt(discriminant);
+      const t0 = (-b - root) / (2 * a), t1 = (-b + root) / (2 * a);
+      if (t0 > 1e-9) time = t0;
+      if (t1 > 1e-9 && t1 < time) time = t1;
+    }
+  }
+  if (!Number.isFinite(time)) time = distance / speed;
+  time = Math.min(time, maxTime);
+  return { x: target.x + targetVelocity.x * time, y: target.y + targetVelocity.y * time };
 }
+
+/** Compatibility name for callers that describe the same intercept as a lead point. */
+export const leadPoint = interceptPoint;
 
 /** Hostiles shoot the nearest thing on the player's side, which is what makes an escort dangerous. */
 function nearestTarget(from: Vec2, targets: readonly ShipState[]): ShipState | undefined {

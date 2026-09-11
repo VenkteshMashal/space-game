@@ -246,7 +246,7 @@ export function buildOre() {
 }
 
 /** A traversing barrel assembly. `pivot.rotation.z` is driven from Mount.bearing each frame. */
-export function buildGunMount(weapon: 'ac20' | 'ac70' | 'gauss' | 'cutter' | 'swarm'): { group: THREE.Group; pivot: THREE.Group } {
+export function buildGunMount(weapon: 'ac20' | 'ac70' | 'gauss' | 'cutter' | 'swarm' | 'pdc' | 'torpedo' | 'plasma'): { group: THREE.Group; pivot: THREE.Group } {
   const group = new THREE.Group();
   const pivot = new THREE.Group();
   cylinder(group, dark, 3.4, 4.2, 3, [0, 0, 0], 12).rotation.x = Math.PI / 2;
@@ -265,11 +265,36 @@ export function buildGunMount(weapon: 'ac20' | 'ac70' | 'gauss' | 'cutter' | 'sw
     const rail = box(pivot, dark, [3.2, 34, 3.2], [0, 15, 2.4]);
     for (let i = 0; i < 7; i++) box(rail, copper, [4.6, 1.4, 4.6], [0, -14 + i * 4.6, 0]);
     box(pivot, metal, [8, 8, 5], [0, -2, 2.4]);
-  } else if (weapon === 'cutter') {
+  } else if (weapon === 'pdc') {
+    box(pivot, armor, [9, 8, 6], [0, -1, 3]);
+    box(pivot, lightArmor, [7, 6, 1], [0, -1, 6.5]);
+    for (let i = 0; i < 6; i++) {
+      const a = i * Math.PI / 3;
+      cylinder(pivot, metal, 0.55, 0.7, 16, [Math.cos(a) * 1.8, 8, 3 + Math.sin(a) * 1.8], 8);
+    }
+    for (const y of [4, 13]) cylinder(pivot, dark, 2.5, 2.5, 1.5, [0, y, 3], 12);
+    box(pivot, copper, [2, 6, 4], [5, -1, 2]);
+  } else if (weapon === 'torpedo') {
+    box(pivot, dark, [12, 18, 4], [0, 0, 2]);
+    for (const x of [-3.2, 3.2]) {
+      cylinder(pivot, armor, 2.7, 2.7, 16, [x, 1, 4], 8);
+      cylinder(pivot, black, 2.2, 2.2, 0.6, [x, 9.1, 4], 12);
+      cylinder(pivot, lightArmor, 0, 1.6, 4, [x, 10, 4], 10);
+      box(pivot, copper, [1, 12, 0.6], [x, 1, 6.8]);
+    }
+  } else if (weapon === 'cutter' || weapon === 'plasma') {
     const head = cylinder(pivot, metal, 2.6, 3.4, 7, [0, 5, 2], 8);
     head.name = 'cutter-head';
     const lens = new THREE.Mesh(new THREE.CircleGeometry(2.3, 12), new THREE.MeshBasicMaterial({ color: '#ff9d6b' }));
     lens.position.set(0, 8.6, 2); lens.rotation.x = -Math.PI / 2; pivot.add(lens);
+    if (weapon === 'plasma') {
+      box(pivot, armor, [9, 8, 4], [0, -2, 2]);
+      for (const x of [-4, 4]) {
+        cylinder(pivot, copper, 1.3, 1.3, 13, [x, 5, 2], 10);
+        box(pivot, metal, [2, 3, 5], [x, 10, 2]);
+      }
+      for (const y of [1, 4, 7]) cylinder(pivot, copper, 3.5, 3.5, 0.9, [0, y, 2], 12);
+    }
   } else {
     for (const side of [-1, 1]) for (let i = 0; i < 3; i++) {
       box(pivot, i % 2 ? armor : dark, [3, 9, 3], [side * 3.4, 2, 1 + i * 3.2]);

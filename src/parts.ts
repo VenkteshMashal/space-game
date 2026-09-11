@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { aegisCore, extendedParts } from './ship-components';
 import {
   armor, beaconHaloMaterial, beaconLampMaterial, black, box, buildGunMount, copper, cylinder,
   dark, glass, hull, lightArmor, metal,
@@ -38,6 +39,8 @@ export type Part = {
   cargo?: number;
   cooling?: number;
   weapon?: string;
+  scanScale?: number;
+  collectScale?: number;
   build: (root: THREE.Group) => void;
 };
 
@@ -182,9 +185,10 @@ export const collector = () => (root: THREE.Group) => {
 // ---------------------------------------------------------------------------
 
 export const CORES: Record<string, Core> = {
+  aegis: aegisCore,
   spar: {
     id: 'spar', name: 'Spar', blurb: 'A bare girder with a cockpit bolted to it. Fast, fragile, cheap.',
-    mass: 18000, hull: 42, torque: 1.05, cooling: 0.032, cost: 2400,
+    mass: 18000, hull: 42, torque: 1.05, cooling: 0.032, cost: 0,
     hardpoints: [
       { id: 'port-engine-1', x: -7, y: -28, z: 0, angle: 0, accepts: ['engine'], mirrorOf: 'starboard-engine-1', label: 'port-engine-1' },
       { id: 'starboard-engine-1', x: 7, y: -28, z: 0, angle: 0, accepts: ['engine'], mirrorOf: 'port-engine-1', label: 'starboard-engine-1' },
@@ -212,7 +216,7 @@ export const CORES: Record<string, Core> = {
 
   truss: {
     id: 'truss', name: 'Truss', blurb: 'The workhorse frame: an open lattice that swallows whatever you bolt to it.',
-    mass: 34000, hull: 92, torque: 1.35, cooling: 0.05, cost: 6400,
+    mass: 34000, hull: 92, torque: 1.35, cooling: 0.05, cost: 0,
     hardpoints: [
       { id: 'port-engine-1', x: -8, y: -30, z: 0, angle: 0, accepts: ['engine'], mirrorOf: 'starboard-engine-1', label: 'port-engine-1' },
       { id: 'starboard-engine-1', x: 8, y: -30, z: 0, angle: 0, accepts: ['engine'], mirrorOf: 'port-engine-1', label: 'starboard-engine-1' },
@@ -256,7 +260,7 @@ export const CORES: Record<string, Core> = {
 
   keel: {
     id: 'keel', name: 'Keel', blurb: 'A wide slab with a stepped prow. Slow, tough, and it carries a refinery.',
-    mass: 62000, hull: 165, torque: 1.05, cooling: 0.06, cost: 14500,
+    mass: 62000, hull: 165, torque: 1.05, cooling: 0.06, cost: 0,
     hardpoints: [
       { id: 'port-engine-1', x: -7, y: -36, z: 0, angle: 0, accepts: ['engine'], mirrorOf: 'starboard-engine-1', label: 'port-engine-1' },
       { id: 'starboard-engine-1', x: 7, y: -36, z: 0, angle: 0, accepts: ['engine'], mirrorOf: 'port-engine-1', label: 'starboard-engine-1' },
@@ -303,27 +307,28 @@ export const CORES: Record<string, Core> = {
 };
 
 export const PARTS: Record<string, Part> = {
+  ...extendedParts,
   // ENGINES — thrust per kg is the whole tradeoff; the big bell is not simply better.
-  'eng-d4': { id: 'eng-d4', name: 'D4 drive', category: 'engine', mass: 5200, cost: 1400, thrust: 420000, torque: 0.10, blurb: 'Compact, thrifty, unremarkable.', build: enginePod(0.8) },
-  'eng-d9': { id: 'eng-d9', name: 'D9 drive', category: 'engine', mass: 11400, cost: 3600, thrust: 980000, torque: 0.14, blurb: 'The standard haul engine.', build: enginePod(1) },
-  'eng-k12': { id: 'eng-k12', name: 'K12 torch', category: 'engine', mass: 19800, cost: 9200, thrust: 1880000, torque: 0.08, blurb: 'Enormous thrust, enormous thirst.', build: enginePod(1.35) },
+  'eng-d4': { id: 'eng-d4', name: 'D4 drive', category: 'engine', mass: 5200, cost: 0, thrust: 420000, torque: 0.10, blurb: 'Compact, thrifty, unremarkable.', build: enginePod(0.8) },
+  'eng-d9': { id: 'eng-d9', name: 'D9 drive', category: 'engine', mass: 11400, cost: 0, thrust: 980000, torque: 0.14, blurb: 'The standard haul engine.', build: enginePod(1) },
+  'eng-k12': { id: 'eng-k12', name: 'K12 torch', category: 'engine', mass: 19800, cost: 0, thrust: 1880000, torque: 0.08, blurb: 'Enormous thrust, enormous thirst.', build: enginePod(1.35) },
   // TANKS
-  'tnk-s': { id: 'tnk-s', name: 'Bladder tank', category: 'tank', mass: 900, cost: 320, fuel: 4200, blurb: 'Cheap volume.', build: tankPod(0.8) },
-  'tnk-m': { id: 'tnk-m', name: 'Standard tank', category: 'tank', mass: 1600, cost: 700, fuel: 8800, blurb: 'Balanced.', build: tankPod(1) },
-  'tnk-l': { id: 'tnk-l', name: 'Long-range tank', category: 'tank', mass: 3100, cost: 1650, fuel: 17500, blurb: 'Dead weight until you need it.', build: tankPod(1.3) },
+  'tnk-s': { id: 'tnk-s', name: 'Bladder tank', category: 'tank', mass: 900, cost: 0, fuel: 4200, blurb: 'Cheap volume.', build: tankPod(0.8) },
+  'tnk-m': { id: 'tnk-m', name: 'Standard tank', category: 'tank', mass: 1600, cost: 0, fuel: 8800, blurb: 'Balanced.', build: tankPod(1) },
+  'tnk-l': { id: 'tnk-l', name: 'Long-range tank', category: 'tank', mass: 3100, cost: 0, fuel: 17500, blurb: 'Dead weight until you need it.', build: tankPod(1.3) },
   // WEAPONS — one part per WEAPONS entry; the part carries the mount geometry.
-  'wpn-ac20': { id: 'wpn-ac20', name: 'AC-20 turret', category: 'weapon', mass: 1400, cost: 900, weapon: 'ac20', blurb: 'Fast, forgiving, weak on rock.', build: gunPart('ac20') },
-  'wpn-ac70': { id: 'wpn-ac70', name: 'AC-70 breaker', category: 'weapon', mass: 3900, cost: 2600, weapon: 'ac70', blurb: 'Splits boulders.', build: gunPart('ac70') },
-  'wpn-gauss': { id: 'wpn-gauss', name: 'Gauss lance', category: 'weapon', mass: 6200, cost: 7400, weapon: 'gauss', blurb: 'One shot, long reach, hot.', build: gunPart('gauss') },
-  'wpn-cutter': { id: 'wpn-cutter', name: 'Mining cutter', category: 'weapon', mass: 2100, cost: 1800, weapon: 'cutter', blurb: 'Short, thirsty, eats asteroids.', build: gunPart('cutter') },
-  'wpn-swarm': { id: 'wpn-swarm', name: 'Swarm rack', category: 'weapon', mass: 2800, cost: 4100, weapon: 'swarm', blurb: 'Fire and forget.', build: gunPart('swarm') },
+  'wpn-ac20': { id: 'wpn-ac20', name: 'AC-20 turret', category: 'weapon', mass: 1400, cost: 0, weapon: 'ac20', blurb: 'Fast, forgiving, weak on rock.', build: gunPart('ac20') },
+  'wpn-ac70': { id: 'wpn-ac70', name: 'AC-70 breaker', category: 'weapon', mass: 3900, cost: 0, weapon: 'ac70', blurb: 'Splits boulders.', build: gunPart('ac70') },
+  'wpn-gauss': { id: 'wpn-gauss', name: 'Gauss lance', category: 'weapon', mass: 6200, cost: 0, weapon: 'gauss', blurb: 'One shot, long reach, hot.', build: gunPart('gauss') },
+  'wpn-cutter': { id: 'wpn-cutter', name: 'Mining cutter', category: 'weapon', mass: 2100, cost: 0, weapon: 'cutter', blurb: 'Short, thirsty, eats asteroids.', build: gunPart('cutter') },
+  'wpn-swarm': { id: 'wpn-swarm', name: 'Swarm rack', category: 'weapon', mass: 2800, cost: 0, weapon: 'swarm', blurb: 'Fire and forget.', build: gunPart('swarm') },
   // HULL AND UTILITY
-  'crg-pod': { id: 'crg-pod', name: 'Ore pod', category: 'cargo', mass: 1200, cost: 480, cargo: 320, blurb: 'Holds what you break.', build: cargoPod() },
-  'arm-tile': { id: 'arm-tile', name: 'Ablative tile', category: 'armor', mass: 2400, cost: 620, hull: 26, blurb: 'Mass you are glad of.', build: armorTile() },
-  'wng-rad': { id: 'wng-rad', name: 'Radiator wing', category: 'wing', mass: 1500, cost: 900, cooling: 0.09, blurb: 'Lets the guns keep firing.', build: radiatorWing() },
-  'rcs-pod': { id: 'rcs-pod', name: 'RCS quad', category: 'rcs', mass: 400, cost: 260, torque: 0.42, blurb: 'Turns you.', build: rcsPod() },
-  'utl-scan': { id: 'utl-scan', name: 'Survey mast', category: 'utility', mass: 700, cost: 1400, blurb: 'Halves every scan time.', build: scanMast() },
-  'utl-coll': { id: 'utl-coll', name: 'Ore collector', category: 'utility', mass: 950, cost: 1100, blurb: 'Triples the ore pickup envelope.', build: collector() },
+  'crg-pod': { id: 'crg-pod', name: 'Ore pod', category: 'cargo', mass: 1200, cost: 0, cargo: 320, blurb: 'Holds what you break.', build: cargoPod() },
+  'arm-tile': { id: 'arm-tile', name: 'Ablative tile', category: 'armor', mass: 2400, cost: 0, hull: 26, blurb: 'Mass you are glad of.', build: armorTile() },
+  'wng-rad': { id: 'wng-rad', name: 'Radiator wing', category: 'wing', mass: 1500, cost: 0, cooling: 0.09, blurb: 'Lets the guns keep firing.', build: radiatorWing() },
+  'rcs-pod': { id: 'rcs-pod', name: 'RCS quad', category: 'rcs', mass: 400, cost: 0, torque: 0.42, blurb: 'Turns you.', build: rcsPod() },
+  'utl-scan': { id: 'utl-scan', scanScale: 2, name: 'Survey mast', category: 'utility', mass: 700, cost: 0, blurb: 'Halves every scan time.', build: scanMast() },
+  'utl-coll': { id: 'utl-coll', collectScale: 3, name: 'Ore collector', category: 'utility', mass: 950, cost: 0, blurb: 'Triples the ore pickup envelope.', build: collector() },
 };
 
 /** Whether a socket takes this kind of part. Used by the builder UI and the save validator. */

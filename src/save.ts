@@ -20,7 +20,7 @@ export type Profile = {
 };
 
 export const STARTING_CREDITS = 6000;
-const STARTING_PARTS = ['eng-d9', 'tnk-m', 'wpn-ac20', 'rcs-pod', 'arm-tile'];
+const STARTING_PARTS = [...Object.keys(CORES), ...Object.keys(PARTS)];
 /** Contract ids a profile may claim. Phase 4 widens this list with the contract board. */
 const CONTRACT_IDS = CONTRACTS.map(contract => contract.id);
 /** The first contract shipped with an en-dash id; profiles written then still count. */
@@ -85,7 +85,7 @@ export function load(): Profile {
     const profile = fresh();
     // Take each field only if it is the right shape; anything else falls back to the fresh default.
     if (Number.isFinite(raw.credits)) profile.credits = clamp(Math.floor(raw.credits), 0, 1e9);
-    if (Array.isArray(raw.owned)) profile.owned = raw.owned.filter((id: unknown) => typeof id === 'string' && (id in PARTS || id in CORES));
+    // Existing profiles automatically receive the complete free catalog.
     if (Array.isArray(raw.builds)) profile.builds = raw.builds.filter(validBuild).slice(0, 24);
     if (Array.isArray(raw.completed)) profile.completed = raw.completed.map(normalizeId).filter((id: unknown) => typeof id === 'string' && CONTRACT_IDS.includes(id));
     if (typeof raw.callsign === 'string') profile.callsign = raw.callsign.slice(0, 14);
@@ -118,8 +118,8 @@ export function earn(profile: Profile, amount: number): void {
   save(profile);
 }
 
-export function own(profile: Profile, id: string): boolean {
-  return profile.owned.includes(id);
+export function own(_profile: Profile, id: string): boolean {
+  return Object.hasOwn(PARTS, id) || Object.hasOwn(CORES, id);
 }
 
 /** Records the best time for a contract, returning the previous best so the debrief can compare. */

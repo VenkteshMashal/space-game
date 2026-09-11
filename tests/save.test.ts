@@ -3,6 +3,7 @@ import {
   STARTING_CREDITS, bestTime, earn, fresh, load, own, recordTime, save, spend, validBuild,
 } from '../src/save';
 import { CONTRACTS } from '../src/contracts';
+import { CORES, PARTS } from '../src/parts';
 
 const KEY = 'drift-profile-v1';
 
@@ -22,12 +23,16 @@ function seed(value: unknown): void {
   localStorage.setItem(KEY, typeof value === 'string' ? value : JSON.stringify(value));
 }
 
+function catalogIds(): string[] {
+  return [...Object.keys(CORES), ...Object.keys(PARTS)].sort();
+}
+
 describe('fresh profile', () => {
-  test('starts with 6000 credits and the five starting parts', () => {
+  test('starts with 6000 credits and the complete free catalog', () => {
     const profile = fresh();
     expect(STARTING_CREDITS).toBe(6000);
     expect(profile.credits).toBe(6000);
-    expect(profile.owned.slice().sort()).toEqual(['arm-tile', 'eng-d9', 'rcs-pod', 'tnk-m', 'wpn-ac20']);
+    expect(profile.owned.slice().sort()).toEqual(catalogIds());
     expect(profile.completed).toEqual([]);
     expect(profile.builds).toEqual([]);
     expect(profile.activeShip).toEqual({ kind: 'stock', id: 'kestrel' });
@@ -37,9 +42,10 @@ describe('fresh profile', () => {
   test('load() with empty storage returns and persists a usable profile', () => {
     const profile = load();
     expect(profile.credits).toBe(6000);
-    expect(profile.owned).toHaveLength(5);
+    expect(profile.owned.slice().sort()).toEqual(catalogIds());
     expect(localStorage.getItem(KEY)).not.toBeNull();
     expect(load().credits).toBe(6000);
+    expect(load().owned.slice().sort()).toEqual(catalogIds());
   });
 });
 
@@ -48,13 +54,13 @@ describe('load() validation', () => {
     seed('{not json at all');
     const profile = load();
     expect(profile.credits).toBe(6000);
-    expect(profile.owned).toHaveLength(5);
+    expect(profile.owned.slice().sort()).toEqual(catalogIds());
   });
 
   test('a version other than 1 is discarded', () => {
     seed({ v: 2, credits: 999999, owned: ['eng-d9'] });
     expect(load().credits).toBe(6000);
-    expect(load().owned).toHaveLength(5);
+    expect(load().owned.slice().sort()).toEqual(catalogIds());
   });
 
   test('wrong-typed fields are dropped or clamped', () => {
@@ -70,7 +76,7 @@ describe('load() validation', () => {
     });
     const profile = load();
     expect(profile.credits).toBe(0);
-    expect(profile.owned).toEqual(['eng-d9']);
+    expect(profile.owned.slice().sort()).toEqual(catalogIds());
     expect(profile.builds).toEqual([]);
     expect(profile.completed).toEqual(['SR-084']);
     expect(profile.bestTimes).toEqual({ 'SR-084': 12.5 });
@@ -81,6 +87,15 @@ describe('load() validation', () => {
   test('credits are clamped to the top of the safe range', () => {
     seed({ v: 1, credits: 5e9, completed: [] });
     expect(load().credits).toBe(1e9);
+  });
+
+  test('a zero-credit legacy profile is migrated to the complete free catalog', () => {
+    seed({ v: 1, credits: 0, owned: ['eng-d9', 'tnk-m'], builds: [], completed: [] });
+    const profile = load();
+    expect(profile.credits).toBe(0);
+    expect(profile.owned.slice().sort()).toEqual(catalogIds());
+    expect(own(profile, 'aegis')).toBe(true);
+    expect(own(profile, 'wpn-torpedo')).toBe(true);
   });
 
   test('legacy en-dash SR-084 ids are normalised to the real contract id', () => {
@@ -154,7 +169,8 @@ describe('economy', () => {
   test('own reports the parts a profile carries', () => {
     const profile = fresh();
     expect(own(profile, 'eng-d9')).toBe(true);
-    expect(own(profile, 'eng-k12')).toBe(false);
+    expect(own(profile, 'eng-k12')).toBe(true);
+    expect(own(profile, 'patrol')).toBe(false);
   });
 
   test('recordTime keeps the better time and returns the previous one', () => {

@@ -114,6 +114,10 @@ export type Cargo = { id: string; name: string; kind: CargoKind; position: Vec2;
 /** The playable volume: a 5.2 x 4.2 km slab of the Nereid recovery zone. */
 export const SECTOR = { minX: -2600, maxX: 2600, minY: -2100, maxY: 2100 };
 export const STATION = { x: 1560, y: 1180 };
+export const DOCK_SPEED = 8;
+export const DOCK_RADIUS = 270;
+/** Clearance surrounds the station's arms; larger hulls need room for their leading edge. */
+export const dockingRadius = (state: ShipState) => Math.max(DOCK_RADIUS, 170 + Math.hypot(state.collider.halfLength, state.collider.halfWidth) + 24);
 export const RELAY = { x: -640, y: -520 };
 export const DERELICT = { x: -1180, y: 1760 };
 
@@ -346,10 +350,7 @@ export function resolveBodies(state: ShipState, docked: boolean): number {
       if (!obbCircleOut(box, body.x, body.y, body.radius, contactPush)) continue;
       contactPush.x = -contactPush.x; contactPush.y = -contactPush.y;
     } else {
-      bodyHull.x = body.x; bodyHull.y = body.y;
-      bodyHull.halfLength = body.halfLength; bodyHull.halfWidth = body.halfWidth;
-      bodyHull.angle = body.angle + stationSpin;
-      if (!obbObbOut(bodyHull, box, contactPush)) continue;
+      if (!obbObbOut(solidBodyBox(body), box, contactPush)) continue;
     }
     damage += applyContact(state, body.restitution);
   }
@@ -362,9 +363,12 @@ export const setStationSpin = (angle: number) => { stationSpin = angle; };
 
 /** Returns the current world collider for a solid box, including station rotation. */
 export function solidBodyBox(body: Extract<SolidBody, { kind: 'box' }>): Box {
-  bodyHull.x = body.x; bodyHull.y = body.y;
+  const spin = isStationBody(body) ? stationSpin : 0;
+  const x = body.x - STATION.x, y = body.y - STATION.y;
+  bodyHull.x = STATION.x + x * Math.cos(spin) - y * Math.sin(spin);
+  bodyHull.y = STATION.y + x * Math.sin(spin) + y * Math.cos(spin);
   bodyHull.halfLength = body.halfLength; bodyHull.halfWidth = body.halfWidth;
-  bodyHull.angle = body.angle + stationSpin;
+  bodyHull.angle = body.angle + spin;
   return bodyHull;
 }
 
@@ -374,21 +378,28 @@ export function bodyAt(x: number, y: number, bodies: readonly SolidBody[] = SOLI
     if (body.kind === 'circle') {
       if (pointInCircle(body, x, y)) return body;
     } else {
-      bodyHull.x = body.x; bodyHull.y = body.y;
-      bodyHull.halfLength = body.halfLength; bodyHull.halfWidth = body.halfWidth;
-      bodyHull.angle = body.angle + stationSpin;
-      if (pointInBox(bodyHull, x, y)) return body;
+      if (pointInBox(solidBodyBox(body), x, y)) return body;
     }
   }
   return undefined;
 }
 
+/** Retrieval arms reach out from the hull, including across the wreck's armored shell. */
+export function recoveryRadius(state: ShipState, cargo: Cargo): number {
+  const dx = cargo.position.x - state.position.x, dy = cargo.position.y - state.position.y;
+  const range = Math.hypot(dx, dy);
+  const cos = Math.cos(state.angle), sin = Math.sin(state.angle);
+  const extent = range > 0 ? (Math.abs(dx * cos + dy * sin) * state.collider.halfWidth
+    + Math.abs(-dx * sin + dy * cos) * state.collider.halfLength) / range : 0;
+  return Math.max(75, extent + (cargo.kind === 'blackbox' ? 110 : 50));
+}
+
 export function canRecover(state: ShipState, cargo: Cargo) {
-  return !cargo.collected && distance(state.position, cargo.position) < 75 && length(state.velocity) < 12;
+  return state.hull > 0 && !cargo.collected && distance(state.position, cargo.position) <= recoveryRadius(state, cargo) && length(state.velocity) < 12;
 }
 
 export function canDock(state: ShipState) {
-  return distance(state.position, STATION) < 115 && length(state.velocity) < 8;
+  return state.hull > 0 && distance(state.position, STATION) <= dockingRadius(state) && length(state.velocity) < DOCK_SPEED;
 }
 
 export type Ore = { id: number; x: number; y: number; vx: number; vy: number; amount: number; life: number };

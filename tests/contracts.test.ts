@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { createCargo, createObstacles, createShip, distance, RELAY, STATION } from '../src/physics';
+import { canRecover, createCargo, createObstacles, createShip, distance, dockingRadius, recoveryRadius, RELAY, STATION } from '../src/physics';
 import type { Cargo, ShipState, Vec2 } from '../src/physics';
 import {
   CONTRACTS, SCAN, activeCargoIds, available, completeDock, createRun, dockable, interactive,
@@ -164,6 +164,61 @@ describe('SR-084 salvage contract', () => {
     completeDock(run, world);
     expect(run.complete).toBe(true);
     expect(run.payout).toBe(SR.payout + SR.bonus!.credits);
+  });
+
+  test('the black box can be scanned and recovered from outside the wreck collider', () => {
+    const run = createRun(SR), world = makeWorld();
+    const blackbox = world.cargos.find(cargo => cargo.kind === 'blackbox')!;
+    holdStation(run, world, RELAY, RELAY_SECONDS + 0.2);
+    world.ship.position = { x: blackbox.position.x - 150, y: blackbox.position.y };
+    world.ship.velocity = { x: 0, y: 0 };
+    expect(recoveryRadius(world.ship, blackbox)).toBeGreaterThan(150);
+    expect(canRecover(world.ship, blackbox)).toBe(true);
+    holdStation(run, world, world.ship.position, SCAN.blackbox.seconds + 0.2);
+    expect(isScanned(run, blackbox.id)).toBe(true);
+    expect(recoverCargo(run, blackbox, world).some(signal => signal.type === 'recovered')).toBe(true);
+    expect(blackbox.collected).toBe(true);
+  });
+
+  test('recovery rejects premature, out-of-range and high-speed requests through shared guards', () => {
+    const run = createRun(SR), world = makeWorld();
+    const blackbox = world.cargos.find(cargo => cargo.kind === 'blackbox')!;
+    world.ship.position = { ...blackbox.position };
+    world.ship.velocity = { x: 0, y: 0 };
+    expect(recoverCargo(run, blackbox, world)).toEqual([]);
+    expect(blackbox.collected).toBe(false);
+
+    holdStation(run, world, RELAY, RELAY_SECONDS + 0.2);
+    run.scanned.push(blackbox.id);
+    world.ship.position = { x: blackbox.position.x - 200, y: blackbox.position.y };
+    const outside = recoveryRadius(world.ship, blackbox) + 1;
+    world.ship.position = { x: blackbox.position.x - outside, y: blackbox.position.y };
+    expect(canRecover(world.ship, blackbox)).toBe(false);
+    expect(interactive(run, world)).toBeUndefined();
+    expect(recoverCargo(run, blackbox, world)).toEqual([]);
+
+    world.ship.position = { ...blackbox.position };
+    world.ship.velocity = { x: 12, y: 0 };
+    expect(canRecover(world.ship, blackbox)).toBe(false);
+    expect(interactive(run, world)).toBeUndefined();
+    expect(recoverCargo(run, blackbox, world)).toEqual([]);
+    expect(blackbox.collected).toBe(false);
+  });
+
+  test('contract docking guards reject out-of-range and high-speed capture', () => {
+    const run = createRun(synth([{ title: 'Dock', objectives: [{ kind: 'dock', label: 'Dock' }] }]));
+    const world = makeWorld();
+    world.ship.position = { x: STATION.x + dockingRadius(world.ship) + 1, y: STATION.y };
+    world.ship.velocity = { x: 0, y: 0 };
+    expect(dockable(run, world)).toBe(false);
+    expect(completeDock(run, world)).toEqual([]);
+    expect(run.docked).toBe(false);
+
+    world.ship.position = { ...STATION };
+    world.ship.velocity = { x: 8, y: 0 };
+    expect(dockable(run, world)).toBe(false);
+    expect(completeDock(run, world)).toEqual([]);
+    expect(run.docked).toBe(false);
   });
 
   test('navigation points at the relay first, then the nearest unresolved contact', () => {

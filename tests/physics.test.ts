@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { canDock, canRecover, createCargo, createObstacles, createShip, DERELICT, distance, emptyInput, length, randomSeed, resolveBodies, resolveCollision, shipBox, SHIPS, SpatialGrid, STATION, stepShip } from '../src/physics';
+import { canDock, canRecover, createCargo, createObstacles, createShip, DERELICT, distance, dockingRadius, emptyInput, length, randomSeed, recoveryRadius, resolveBodies, resolveCollision, setStationSpin, shipBox, SHIPS, solidBodyBox, SOLID_BODIES, SpatialGrid, STATION, stepShip } from '../src/physics';
 import type { Obstacle } from '../src/physics';
 import { obbCircleOut, scratch } from '../src/collision';
+import { buildSpec, presetBuild } from '../src/build';
 
 function advance(ship: ReturnType<typeof createShip>, input = emptyInput(), seconds = 1) {
   for (let i = 0; i < seconds * 120; i++) stepShip(ship, input, 1 / 120);
@@ -198,9 +199,51 @@ describe('collision and recovery boundaries', () => {
     ship.velocity.x = 0; cargo.collected = true; expect(canRecover(ship, cargo)).toBe(false);
   });
 
+  test('the blackbox retrieval arm reaches from outside the wreck collider', () => {
+    const ship = createShip();
+    const blackbox = createCargo().find(cargo => cargo.kind === 'blackbox')!;
+    ship.position = { x: DERELICT.x - 150, y: DERELICT.y };
+    ship.velocity = { x: 0, y: 0 };
+    expect(recoveryRadius(ship, blackbox)).toBeGreaterThan(150);
+    expect(canRecover(ship, blackbox)).toBe(true);
+    expect(resolveBodies(ship, false)).toBe(0);
+  });
+
   test('docking requires a low-speed approach to the station', () => {
     const ship = createShip(); expect(canDock(ship)).toBe(false);
     ship.position = { ...STATION }; expect(canDock(ship)).toBe(true);
     ship.velocity = { x: 8, y: 0 }; expect(canDock(ship)).toBe(false);
+  });
+
+  test('all stock hulls and a large custom hull can approach slowly outside physical station colliders', () => {
+    setStationSpin(0);
+    const custom = createShip('kestrel', buildSpec(presetBuild('patrol')), { halfLength: 120, halfWidth: 80 });
+    for (const ship of [createShip('kestrel'), createShip('mule'), createShip('needle'), custom]) {
+      const clearance = dockingRadius(ship);
+      ship.position = { x: STATION.x - clearance + 1, y: STATION.y };
+      ship.velocity = { x: 7.5, y: 0 };
+      expect(canDock(ship)).toBe(true);
+      expect(resolveBodies(ship, false)).toBe(0);
+      expect(ship.hull).toBe(ship.spec.hull);
+    }
+  });
+
+  test('station arm colliders follow station rotation while the wreck collider stays fixed', () => {
+    const arm = SOLID_BODIES.find(body => body.id === 'station-arm-port');
+    const wreck = SOLID_BODIES.find(body => body.id === 'derelict');
+    if (!arm || arm.kind !== 'box' || !wreck || wreck.kind !== 'box') throw new Error('expected station arm and wreck boxes');
+    setStationSpin(Math.PI / 2);
+    try {
+      const rotatedArm = solidBodyBox(arm);
+      expect(rotatedArm.x).toBeCloseTo(STATION.x, 8);
+      expect(rotatedArm.y).toBeCloseTo(STATION.y - 112, 8);
+      expect(rotatedArm.angle).toBeCloseTo(Math.PI / 2, 8);
+      const stationaryWreck = solidBodyBox(wreck);
+      expect(stationaryWreck.x).toBeCloseTo(DERELICT.x, 8);
+      expect(stationaryWreck.y).toBeCloseTo(DERELICT.y, 8);
+      expect(stationaryWreck.angle).toBeCloseTo(0, 8);
+    } finally {
+      setStationSpin(0);
+    }
   });
 });

@@ -63,11 +63,12 @@ describe('the part catalogue', () => {
   test('every part is coherent and fits a socket that accepts its category', () => {
     for (const part of Object.values(PARTS)) {
       expect(part.mass).toBeGreaterThan(0);
-      expect(part.cost).toBeGreaterThan(0);
+      expect(part.cost).toBe(0);
       const socket: Hardpoint = { id: 'probe', x: 0, y: 0, z: 0, angle: 0, accepts: [part.category], label: 'probe' };
       expect(partFits(part, socket)).toBe(true);
       expect(partFits(part, { ...socket, accepts: ['wing'] })).toBe(part.category === 'wing');
     }
+    for (const core of Object.values(CORES)) expect(core.cost).toBe(0);
     for (const id of ['eng-d4', 'eng-d9', 'eng-k12']) expect(PARTS[id].thrust).toBeGreaterThan(0);
     for (const id of ['tnk-s', 'tnk-m', 'tnk-l']) expect(PARTS[id].fuel).toBeGreaterThan(0);
     for (const id of ['wpn-ac20', 'wpn-ac70', 'wpn-gauss', 'wpn-cutter', 'wpn-swarm']) expect(PARTS[id].weapon).toBeTruthy();
@@ -183,7 +184,7 @@ describe('deriving a build', () => {
   });
 
   test('starter presets place only fitting parts and produce useful mission builds', () => {
-    for (const id of ['balanced', 'mining', 'combat'] as const) {
+    for (const id of ['balanced', 'mining', 'combat', 'patrol'] as const) {
       const build = presetBuild(id, `preset-${id}`);
       for (const [slot, partId] of Object.entries(build.slots)) {
         const hardpoint = CORES[build.core].hardpoints.find(entry => entry.id === slot)!;
@@ -200,13 +201,54 @@ describe('deriving a build', () => {
     expect(derive(presetBuild('combat')).mounts.length).toBeGreaterThan(0);
   });
 
-  test('purchase quotes count each mirrored item once and never grant ownership', () => {
+  test('the patrol starter is valid and every installed component fits its Aegis mount', () => {
+    const patrol = presetBuild('patrol', 'patrol-test', 'Patrol');
+    expect(patrol.core).toBe('aegis');
+    expect(derive(patrol).valid).toBe(true);
+    for (const [slot, partId] of Object.entries(patrol.slots)) {
+      const hardpoint = CORES.aegis.hardpoints.find(entry => entry.id === slot)!;
+      expect(partId).toBeTruthy();
+      expect(partFits(PARTS[partId!], hardpoint)).toBe(true);
+    }
+    for (const id of ['eng-fusion', 'tnk-m', 'wpn-pdc', 'wpn-torpedo', 'wpn-plasma', 'crg-heavy', 'wng-split', 'rcs-vector']) {
+      expect(Object.values(patrol.slots)).toContain(id);
+    }
+  });
+
+  test('survey hardware uses free multiplier values and the strongest fitted array', () => {
+    expect(PARTS['utl-scan'].cost).toBe(0);
+    expect(PARTS['utl-scan'].scanScale).toBe(2);
+    expect(PARTS['utl-array'].cost).toBe(0);
+    expect(PARTS['utl-array'].scanScale).toBe(3);
+    const build = createBuild('aegis', 'Sensors', 'sensors');
+    const sensor = CORES.aegis.hardpoints.find(entry => entry.id === 'sensor-spine')!;
+    const cargo = CORES.aegis.hardpoints.find(entry => entry.id === 'port-cargo')!;
+    toggleSlot(build, sensor.id, 'utl-scan', false);
+    toggleSlot(build, cargo.id, 'utl-array', false);
+    expect(derive(build).scanScale).toBe(3);
+  });
+
+  test('free catalog purchase compatibility returns an empty quote', () => {
     const build = presetBuild('balanced');
     const quote = purchaseQuoteForBuild(build, ['eng-d9', 'tnk-m', 'wpn-ac20', 'rcs-pod']);
-    expect(quote.items.map(item => item.id)).toEqual(['spar']);
-    expect(quote.total).toBe(CORES.spar.cost);
+    expect(quote).toEqual({ items: [], total: 0 });
     const mining = purchaseQuoteForPreset('mining', ['eng-d9', 'tnk-m', 'rcs-pod']);
-    expect(mining.items.map(item => item.id).sort()).toEqual(['crg-pod', 'truss', 'utl-coll', 'wpn-cutter'].sort());
-    expect(mining.total).toBe(CORES.truss.cost + PARTS['crg-pod'].cost + PARTS['utl-coll'].cost + PARTS['wpn-cutter'].cost);
+    expect(mining).toEqual({ items: [], total: 0 });
+    expect(purchaseQuoteForPreset('patrol', [])).toEqual({ items: [], total: 0 });
+  });
+
+  test('toggleSlot supports an asymmetric fit when mirroring is disabled', () => {
+    const build = createBuild('truss', 'Asymmetric', 'asymmetric');
+    const port = socketFor(build, 'weapon', 0);
+    const starboard = CORES.truss.hardpoints.find(entry => entry.id === port.mirrorOf)!;
+    toggleSlot(build, port.id, 'wpn-pdc', false);
+    expect(build.slots[port.id]).toBe('wpn-pdc');
+    expect(build.slots[starboard.id]).toBeUndefined();
+    toggleSlot(build, starboard.id, 'wpn-torpedo', false);
+    expect(build.slots[starboard.id]).toBe('wpn-torpedo');
+    expect(build.slots[port.id]).toBe('wpn-pdc');
+    toggleSlot(build, port.id, null, false);
+    expect(build.slots[port.id]).toBeNull();
+    expect(build.slots[starboard.id]).toBe('wpn-torpedo');
   });
 });

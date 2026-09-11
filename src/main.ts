@@ -6,6 +6,7 @@ import '@fontsource/barlow-condensed/latin-400.css';
 import '@fontsource/barlow-condensed/latin-500.css';
 import '@fontsource/barlow-condensed/latin-600.css';
 import './style.css';
+import './flight-ui.css';
 import { icon } from './icons';
 import { SpaceScene } from './scene';
 import { Collar } from './collar';
@@ -17,7 +18,7 @@ import { Radar } from './radar';
 import { FlightAudio } from './audio';
 import { combatTargets, sortieEarnings } from './sortie';
 import { resolveShipCollision } from './physics';
-import { clamp, createCargo, createObstacles, createShip, distance, fractureRock, heading, length, ORE_PICKUP_RADIUS, ORE_PRICE, resolveBodies, resolveCollision, setStationSpin, shipBox, SHIPS, SECTOR, SOLID_BODIES, SpatialGrid, STATION, RELAY, stepFragments, stepOre, stepShip } from './physics';
+import { dockingRadius, recoveryRadius, DOCK_SPEED, clamp, createCargo, createObstacles, createShip, distance, fractureRock, heading, length, ORE_PICKUP_RADIUS, ORE_PRICE, resolveBodies, resolveCollision, setStationSpin, shipBox, SHIPS, SECTOR, SOLID_BODIES, SpatialGrid, STATION, RELAY, stepFragments, stepOre, stepShip } from './physics';
 import type { FlightInput, Obstacle, Ore, ShipClass, ShipState, Vec2 } from './physics';
 import { createHostile, fireMounts, HOSTILES, MAX_ROUNDS, Rounds, stepBeams, stepHostile, stepRounds, STOCK_MOUNTS, WEAPONS, wrapAngle } from './combat';
 import type { BeamHit, Hit, Hostile, HostileKind, Mount } from './combat';
@@ -29,10 +30,10 @@ import type { Contract, EscortSpec, NavTarget, Run, RunSignal, SpawnSpec, World 
 import { createAlly, stepAlly } from './ally';
 import type { Ally } from './ally';
 import { Builder } from './builder';
-import { buildFromParts, buildSpec, createBuild, derive, purchaseQuoteForBuild } from './build';
+import { buildFromParts, buildSpec, derive, presetBuild } from './build';
 import type { Build, BuiltShip } from './build';
 import { CORES, PARTS } from './parts';
-import { bestTime, earn, fresh, load, own, recordTime, save, spend } from './save';
+import { bestTime, earn, fresh, load, own, recordTime, save } from './save';
 import type { Profile } from './save';
 import { Box3, Color, Mesh, Vector3 } from 'three';
 import type * as THREE from 'three';
@@ -54,7 +55,7 @@ $('#app').innerHTML = `
           <strong id="mission-title">Ghosts in the belt</strong>
         </button>
         <div class="contract-rule hud-mark is-live"><span id="mission-bar"></span></div>
-        <p class="contract-count hud-mark is-live"><span id="stage-chip">Stage 1</span><span id="cargo-count">0 <span>/ 3</span></span></p>
+        <p id="objective-detail"></p><p class="contract-count hud-mark is-live"><span id="stage-chip">Stage 1</span><span id="cargo-count">0 <span>/ 3</span></span></p>
         <div class="target-telemetry" id="target-telemetry" hidden><span id="combat-target-name"></span><strong id="combat-target-hull"></strong><i><b id="combat-target-bar"></b></i><small id="combat-target-range"></small></div>
       </div>
 
@@ -67,7 +68,7 @@ $('#app').innerHTML = `
       <div class="hud hud-bottom-left">
         <div class="bars">
           <div class="bar" id="readout-hull"><span class="bar-label">hull</span><i class="bar-track"><b id="hull-bar"></b></i><em class="bar-value" id="hull-value">100<small>%</small></em></div>
-          <div class="bar" id="readout-prop"><span class="bar-label">prop</span><i class="bar-track"><b id="fuel-bar"></b></i><em class="bar-value" id="fuel-value">100<small>%</small></em></div>
+          <div class="bar" id="readout-prop"><span class="bar-label">fuel</span><i class="bar-track"><b id="fuel-bar"></b></i><em class="bar-value" id="fuel-value">100<small>%</small></em></div>
           <div class="bar" id="readout-heat"><span class="bar-label">heat</span><i class="bar-track"><b id="heat-bar"></b></i><em class="bar-value" id="heat-value">0<small>%</small></em></div>
           <div class="bar" id="readout-hold"><span class="bar-label">hold</span><i class="bar-track"><b id="hold-bar"></b></i><em class="bar-value" id="hold-value">0<small>/120</small></em></div>
         </div>
@@ -81,7 +82,7 @@ $('#app').innerHTML = `
       <div class="hud hud-bottom-right">
         <div class="viewport-tools"><button class="icon-button" id="zoom-out" aria-label="Zoom out" title="Zoom out">−</button><span id="zoom-value" class="hud-mark is-live">1.40×</span><button class="icon-button" id="zoom-in" aria-label="Zoom in" title="Zoom in">+</button><button class="icon-button" id="zoom-reset" aria-label="Reset zoom" title="Reset zoom">${icon('expand')}</button><button class="icon-button" id="camera-button" aria-label="Toggle cinematic view" title="Cinematic view · V">${icon('eye')}</button></div>
         <div class="guns hud-mark is-live" id="weapons-strip"></div>
-        <div class="numerals hud-mark is-live"><span id="accel-value">0.00<small> g</small></span><span id="heading-value">036<small>°</small></span><span id="turn-rate">0.0<small> °/s</small></span></div>
+        <div class="numerals hud-mark is-live"><div><small>ACCEL</small><span id="accel-value">0.00 g</span></div><div><small>HEADING</small><span id="heading-value">036°</span></div><div><small>TURN RATE</small><span id="turn-rate">0.0 °/s</span></div></div>
       </div>
 
       <div class="hud hud-centre">
@@ -94,14 +95,14 @@ $('#app').innerHTML = `
       <span id="hit-confirm" class="hit-confirm" aria-hidden="true">×</span>
       <div class="ship-label" id="player-label"><span class="label-rule"></span><div><strong id="player-name">Kestrel</strong><small id="player-mode">Coasting</small></div></div>
       <div class="map-legend" hidden><h2>Nereid recovery zone</h2><p>5.2 × 4.2 km across, 500 m grid squares</p><span>${icon('flight')}Your vessel</span><span>${icon('beacon')}Relay beacon</span><span>${icon('box')}Salvage archive</span><span>${icon('derelict')}Derelict wreck</span><span>${icon('station')}Wayfarer station</span><span>${icon('raider')}Hostile contact</span><small>Choose a contact to set your navigation target. Tab cycles hostiles.</small></div>
-      <div class="radar-plate" id="radar-plate"><canvas id="radar-canvas" aria-label="Sector chart"></canvas><div class="navigation-info"><span id="target-summary">No target</span><strong id="target-range">—</strong><small id="target-speed">Target selected</small></div></div>
-      <div class="touch-controls" aria-label="Touch flight controls"><div class="touch-steering"><button data-key="KeyA" aria-label="Rotate left">↶</button><button data-key="KeyD" aria-label="Rotate right">↷</button></div><div class="touch-drive"><button data-key="KeyX" aria-label="Brake">Brake</button><button data-key="KeyW" class="touch-burn" aria-label="Main thrust">${icon('flight')} Burn</button><button data-trigger="fire" class="touch-fire" aria-label="Fire weapons">${icon('target')} Fire</button><button data-trigger="mine" aria-label="Mining cutter">${icon('bolt')} Cut</button></div></div>
+      <div class="radar-plate" id="radar-plate"><canvas id="radar-canvas" aria-label="Sector chart"></canvas></div><div class="navigation-info hud"><span class="instrument-caption">NAVIGATION TARGET</span><span id="target-summary">No target</span><strong id="target-range">—</strong><small id="target-closing"></small><small id="target-speed">Target selected</small></div>
+      <div class="touch-controls" aria-label="Touch flight controls"><div class="touch-steering"><button data-key="KeyA" aria-label="Rotate left">↶</button><button data-key="KeyD" aria-label="Rotate right">↷</button></div><div class="touch-drive"><button data-key="KeyX" aria-label="Brake">Brake</button><button data-key="KeyW" class="touch-burn" aria-label="Main thrust">${icon('flight')} Burn</button><button data-trigger="fire" class="touch-fire" aria-label="Fire weapons">${icon('target')} Fire</button><button data-trigger="missile" aria-label="Launch missiles">Missile</button><button data-trigger="mine" aria-label="Mining cutter">${icon('bolt')} Cut</button></div></div>
       <div class="paused-indicator" hidden>
         <span>Simulation paused</span>
         <div class="pause-actions"><button id="resume-button">Resume flight ${icon('play')}</button><button id="pause-hangar">Return to hangar</button><button id="pause-manual">Flight manual</button></div>
         <div class="mission-stages" id="stage-rows"></div>
         <div class="pause-specs"><label class="limiter"><span>Thrust limiter <b id="limiter-value">100%</b></span><input id="throttle" type="range" min="10" max="100" value="100" aria-label="Main engine thrust limit"/></label><p><span id="ship-role">Independent corvette</span><span id="mass-value">98.0 t</span><span id="drive-state">Standby</span></p></div>
-        <div class="keyboard-guide"><span><kbd>W</kbd><kbd>S</kbd> thrust</span><span><kbd>A</kbd><kbd>D</kbd> rotate</span><span><kbd>Space</kbd> fire</span><span><kbd>C</kbd> cutter</span><span><kbd>R</kbd> interact</span><span><kbd>M</kbd> chart</span><span>no drag, no speed limit</span></div>
+        <div class="keyboard-guide"><span><kbd>W</kbd><kbd>S</kbd> thrust</span><span><kbd>A</kbd><kbd>D</kbd> rotate</span><span><kbd>Space</kbd> fire</span><span><kbd>G</kbd> missiles</span><span><kbd>C</kbd> mining</span><span><kbd>R</kbd> interact</span><span><kbd>M</kbd> chart</span><span>no drag, no speed limit</span></div>
       </div>
       <div class="stage-banner" id="stage-banner" hidden><span id="stage-banner-kicker">Objective</span><strong id="stage-banner-text"></strong></div>
       <div class="damage-flash" id="damage-flash"></div>
@@ -125,24 +126,22 @@ $('#app').innerHTML = `
     </section>
 
     <section class="hangar-screen" id="hangar-screen" hidden aria-label="Hangar bay">
+      <header class="hangar-header"><div><strong>DRIFT<span> / </span></strong><span>WAYFARER HANGAR</span></div><span class="yard-free">All ships & components free</span><button id="hangar-back" class="ghost-button">Flight manual ${icon('help')}</button></header>
       <div class="hangar-grid">
         <div class="hangar-bay">
           <div class="bay-viewport" id="hangar-viewport"></div>
-          <div class="bay-strip-head"><span class="section-label">Vessel</span><span class="section-hint">Switch hull · next sortie starts fresh</span></div>
+          <div class="hangar-inspect-hint">Drag to inspect · scroll to zoom</div>
+          <div class="bay-strip-head"><span class="section-label">YOUR FLEET</span><span class="section-hint">Choose a vessel</span></div>
           <div class="bay-strip" id="hangar-tabs"></div>
-          <div class="bay-strip-head"><span class="section-label">Contracts</span><span class="section-hint">Locked work opens as you finish jobs</span></div>
-          <div class="contract-strip" id="contract-board"></div>
         </div>
         <div class="hangar-brief">
-          <span class="dialog-kicker">Contract board · Wayfarer</span>
-          <h2 id="hangar-title">Ghosts in the belt</h2>
-          <p class="brief-copy" id="hangar-brief">A survey crew stopped transmitting in the Nereid recovery zone.</p>
-          <div class="brief-stages" id="hangar-stages"></div>
+          <span class="dialog-kicker">READY FOR DEPARTURE</span>
           <div class="brief-ship" id="hangar-ship"></div>
-          <label class="callsign-field"><span>Call sign</span><input id="callsign" maxlength="14" autocomplete="off" spellcheck="false" value="Rook"/></label>
-          <button class="primary-button" id="launch-sortie">Launch sortie ${icon('flight')}</button>
-          <button class="ghost-button" id="hangar-shipyard">Open shipyard</button>
-          <button class="ghost-button" id="hangar-back">Back to title</button>
+          <label class="mission-picker"><span>Assignment</span><select id="contract-board" aria-label="Choose mission"></select></label>
+          <h2 id="hangar-title">Ghosts in the belt</h2>
+          <p class="brief-copy" id="hangar-brief"></p>
+          <details class="brief-details"><summary>Mission details & pilot</summary><div class="brief-stages" id="hangar-stages"></div><label class="callsign-field"><span>Call sign</span><input id="callsign" maxlength="14" autocomplete="off" spellcheck="false" value="Rook"/></label></details>
+          <div class="departure-actions"><button class="primary-button" id="launch-sortie">Launch sortie ${icon('flight')}</button><button class="ghost-button" id="hangar-shipyard">Customize in shipyard ${icon('ship')}</button><p>Build freely. Save your fleet. Fly your design.</p></div>
         </div>
       </div>
     </section>
@@ -198,10 +197,7 @@ function world(): World {
   };
 }
 const aimTargets: { state: ShipState; faction: 0 | 1 }[] = [];
-const beamVisuals: BeamVisual[] = [
-  { x: 0, y: 0, ex: 0, ey: 0, hot: false }, { x: 0, y: 0, ex: 0, ey: 0, hot: false },
-  { x: 0, y: 0, ex: 0, ey: 0, hot: false }, { x: 0, y: 0, ex: 0, ey: 0, hot: false },
-];
+const beamVisuals: BeamVisual[] = Array.from({ length: 16 }, () => ({ x: 0, y: 0, ex: 0, ey: 0, hot: false }));
 let mounts: Mount[] = [];
 let hostiles: Hostile[] = [];
 let allies: Ally[] = [];
@@ -215,6 +211,10 @@ let aimFromPointer = false;
 const pointerAim = { x: 0, y: 0 };
 let lastHitTime = -1;
 let firing = false;
+let missileFiring = false;
+let dockCapture = 0;
+let recoveryCapture = 0;
+let dockLatched = false;
 let mining = false;
 let scene: SpaceScene;
 let radar: Radar;
@@ -352,7 +352,7 @@ function trackNearest() {
 }
 
 function setPaused(value: boolean) {
-  paused = value; keys.clear(); firing = false; mining = false;
+  paused = value; keys.clear(); firing = false; mining = false; missileFiring = false;
   $<HTMLElement>('.paused-indicator').hidden = !paused || modalOpen || flow !== 'flight';
   $('#pause-button').innerHTML = icon(paused ? 'play' : 'pause');
   $('#pause-button').setAttribute('aria-label', paused ? 'Resume simulation' : 'Pause simulation');
@@ -385,7 +385,7 @@ dialog.addEventListener('close', () => {
   modalOpen = false; keys.clear();
   $('.paused-indicator').hidden = !paused || flow !== 'flight';
   lastFrame = performance.now();
-  if (bay) { bay.dispose(); bay = undefined; }
+  if (bay && flow === 'flight') { bay.dispose(); bay = undefined; }
 });
 $('.dialog-close').addEventListener('click', closeDialog);
 dialog.addEventListener('click', event => { if (event.target === dialog) closeDialog(); });
@@ -471,15 +471,7 @@ function showBuilder(build?: Build) {
   builder = new Builder(bay!, $('#builder-panel'), {
     credits: () => profile.credits,
     owns: id => own(profile, id),
-    buy: id => {
-      const item = (PARTS as Record<string, { cost: number } | undefined>)[id] ?? (CORES as Record<string, { cost: number } | undefined>)[id];
-      if (!item) return false;
-      if (!spend(profile, item.cost)) { toast(`Not enough credits for that — ${item.cost.toLocaleString()} cr needed.`); return false; }
-      profile.owned.push(id);
-      save(profile);
-      toast('Purchased and installed.');
-      return true;
-    },
+    buy: id => own(profile, id),
     save: build => {
       const existing = profile.builds.find(entry => entry.id === build.id);
       if (existing) Object.assign(existing, structuredClone(build));
@@ -489,15 +481,14 @@ function showBuilder(build?: Build) {
     },
     launch: build => launchBuild(build),
     close: () => showHangar(),
-  }, structuredClone(build ?? activeBuild() ?? createBuild('spar', 'New frame', `b${Date.now().toString(36)}`)));
+  }, structuredClone(build ?? activeBuild() ?? presetBuild('patrol', `b${Date.now().toString(36)}`, 'Aegis')));
 }
 
 function launchBuild(build: Build) {
   const stats = derive(build);
-  const quote = purchaseQuoteForBuild(build, profile.owned);
-  if (!stats.valid || quote.items.length || (selectedContract.kind === 'mining' && (!stats.cargo || !stats.mounts.length)) || (selectedContract.kind === 'bounty' && !stats.mounts.length)) {
+  if (!stats.valid || (selectedContract.kind === 'mining' && (!stats.cargo || !stats.mounts.some(m => WEAPONS[m.weapon]?.kind === 'beam'))) || (selectedContract.kind === 'bounty' && !stats.mounts.length)) {
     showBuilder(build);
-    toast(stats.problems[0] ?? (quote.items.length ? `Purchase the remaining systems: ${quote.total.toLocaleString()} cr.` : 'Fit weapons and mission equipment before launching this contract.'));
+    toast(stats.problems[0] ?? 'Fit weapons and mission equipment before launching this contract.');
     return;
   }
   const savedBuild = profile.builds.find(entry => entry.id === build.id);
@@ -522,22 +513,7 @@ function launchStock(shipClass: ShipClass) {
   launchSequence();
 }
 
-function showTitle() {
-  flow = 'title';
-  setFlowClass();
-  closeBuilder();
-  bay?.dispose(); bay = undefined;
-  $<HTMLElement>('#hangar-screen').hidden = true;
-  $<HTMLElement>('#build-screen').hidden = true;
-  $<HTMLElement>('#title-screen').hidden = false;
-  scene.setMode('title');
-  scene.titleFocus = window.innerWidth > 900 ? { x: -430, y: -110 } : { x: 0, y: -30 };
-  scene.cinematic = false;
-  document.querySelectorAll('[data-view]').forEach(el => el.classList.remove('active'));
-  const best = bestTime(profile, selectedContract.id);
-  $('#title-best').textContent = best > 0 ? `Best flight ${Math.floor(best / 60)}:${String(Math.floor(best % 60)).padStart(2, '0')}` : 'No flight recorded';
-  $('#title-credits').textContent = `${profile.credits.toLocaleString()} cr`;
-}
+function showTitle() { showHangar(); }
 
 function showHangar() {
   flow = 'hangar';
@@ -597,27 +573,16 @@ function setHangarShip(active: Profile['activeShip']) {
 
 /** The hangar's contract board: every job, its danger, its pay, and what is still locked. */
 function renderContractBoard() {
-  const board = $('#contract-board');
+  const board = $<HTMLSelectElement>('#contract-board');
   board.innerHTML = CONTRACTS.map(contract => {
     const lock = lockedBy(contract, profile);
-    const done = profile.completed.includes(contract.id);
-    return `<button class="contract-card ${contract.id === selectedContract.id ? 'active' : ''} ${lock ? 'locked' : ''}" data-contract="${contract.id}">
-      <span class="contract-card-top"><span class="contract-kind">${contract.kicker}</span><span class="danger-pips" title="Danger ${contract.danger} of 3">${[0, 1, 2].map(step => `<i class="${step < contract.danger ? 'hot' : ''}"></i>`).join('')}</span></span>
-      <b>${contract.title}</b>
-      <small>${contract.kind === 'salvage' ? 'Salvage' : contract.kind === 'mining' ? 'Mining' : contract.kind === 'bounty' ? 'Combat' : contract.kind === 'escort' ? 'Escort' : 'Survey'} · ${contract.payout.toLocaleString()} cr${contract.bonus ? ` + ${contract.bonus.credits.toLocaleString()} bonus` : ''}</small>
-      ${lock ? `<span class="contract-lock">Locked · finish ${lock.title}</span>` : done ? '<span class="contract-done">Completed</span>' : ''}
-    </button>`;
+    return `<option value="${contract.id}" ${lock ? 'disabled' : ''} ${selectedContract.id === contract.id ? 'selected' : ''}>${escapeHtml(contract.title)} · ${contract.kind}${lock ? ' — complete ' + escapeHtml(lock.title) : ''}</option>`;
   }).join('');
-  board.querySelectorAll<HTMLButtonElement>('[data-contract]').forEach(button => button.addEventListener('click', () => {
-    const contract = CONTRACTS.find(entry => entry.id === button.dataset.contract);
-    if (!contract) return;
-    const lock = lockedBy(contract, profile);
-    if (lock) { toast(`${contract.title} is locked until ${lock.title} is complete.`); sound.ping(); return; }
-    selectedContract = contract;
-    renderContractBoard();
+  board.onchange = () => {
+    selectedContract = CONTRACTS.find(contract => contract.id === board.value && !lockedBy(contract, profile)) ?? selectedContract;
     renderContractBrief();
     sound.ping();
-  }));
+  };
 }
 
 /** The selected contract's stages, read straight off the contract data. */
@@ -639,15 +604,9 @@ function setFlowClass() {
   document.querySelectorAll<HTMLButtonElement>('[data-view]').forEach(button => { if (button.dataset.view === 'shipyard') return; button.classList.toggle('active', flow === 'flight' && button.dataset.view === (scene.mode === 'map' ? 'map' : 'flight')); });
 }
 
-function innerHangar() {
-  return `<div class="shipyard-grid">${(Object.keys(SHIPS) as ShipClass[]).map(type => {
-    const ship = SHIPS[type];
-    return `<article class="ship-card ${state.shipClass === type ? 'current-ship' : ''}"><div class="ship-card-top"><span>${type === 'kestrel' ? 'All-rounder' : type === 'mule' ? 'Endurance' : 'Agility'}</span>${state.shipClass === type ? '<span class="current-tag">Current vessel</span>' : ''}</div><h3>${ship.name}</h3><p>${ship.role}</p><dl>${statsFor(type).map(row => `<div><dt>${row.label}</dt><dd>${row.value}</dd></div>`).join('')}</dl><button class="${state.shipClass === type ? 'secondary-button' : 'primary-button'}" data-ship="${type}">${state.shipClass === type ? 'Stay aboard' : `Command ${ship.name}`}</button></article>`;
-  }).join('')}</div>`;
-}
 
 function showHelp() {
-  openDialog(`<span class="dialog-kicker">Flight school</span><h2 id="dialog-title">Space doesn’t have brakes.</h2><p class="dialog-description">Your engines change your velocity. Your thrusters change your heading. Learn to use them independently, and the belt is yours.</p><div class="manual-feature"><span class="manual-orbit">${icon('flight')}</span><div><strong>Burn. Coast. Counterburn.</strong><p>Point at your target and hold W to accelerate. Release W to coast. Hold X to fire braking thrusters before you arrive. Rotating alone won’t change where you’re going.</p></div></div><div class="manual-feature"><span class="manual-orbit">${icon('target')}</span><div><strong>Guns and rock.</strong><p>Move the mouse to aim: turrets traverse inside their arc and rounds inherit your velocity. Space fires the primary mounts, C runs the mining cutter — short, thirsty, and four times as fast through asteroid. Every shot adds drive heat, so the limiter is your rate of fire.</p></div></div><div class="manual-grid"><div><kbd>W</kbd><kbd>S</kbd><span>Main / reverse thrust</span></div><div><kbd>A</kbd><kbd>D</kbd><span>Rotate left / right</span></div><div><kbd>Q</kbd><kbd>E</kbd><span>Strafe left / right</span></div><div><kbd>Shift</kbd><span>Hard burn · more heat</span></div><div><kbd>Space</kbd><span>Fire primary mounts</span></div><div><kbd>C</kbd><span>Mining cutter</span></div><div><kbd>Mouse</kbd><span>Aim the turrets</span></div><div><kbd>X</kbd><span>Braking thrusters</span></div><div><kbd>F</kbd><span>Attitude assist</span></div><div><kbd>R</kbd><span>Scan, recover, dock</span></div><div><kbd>M</kbd><span>Sector chart</span></div><div><kbd>Esc</kbd><span>Pause</span></div></div><div class="manual-mission"><strong>Contract ${CONTRACTS[0].id} · ${CONTRACTS[0].title}</strong><p>Pull the relay telemetry first: it resolves the archive contacts. Hold station inside the scan envelope to resolve a contact, then close to 75 m and slow under 12 m/s to bring it aboard. Wayfarer pays on delivery — and pays extra for the black box still aboard the wreck of Kite’s End.</p></div><button class="primary-button" id="manual-close">Understood ${icon('check')}</button>`);
+  openDialog(`<span class="dialog-kicker">Flight school</span><h2 id="dialog-title">Space doesn’t have brakes.</h2><p class="dialog-description">Your engines change your velocity. Your thrusters change your heading. Learn to use them independently, and the belt is yours.</p><div class="manual-feature"><span class="manual-orbit">${icon('flight')}</span><div><strong>Burn. Coast. Counterburn.</strong><p>Point at your target and hold W to accelerate. Release W to coast. Hold X to fire braking thrusters before you arrive. Rotating alone won’t change where you’re going.</p></div></div><div class="manual-feature"><span class="manual-orbit">${icon('target')}</span><div><strong>Guns and rock.</strong><p>Move the mouse to aim: turrets traverse inside their arc and rounds inherit your velocity. Space fires the primary mounts, G launches guided missiles, and C runs the mining tools. Tab selects a hostile for guidance. Every shot adds drive heat, so the limiter is your rate of fire.</p></div></div><div class="manual-grid"><div><kbd>W</kbd><kbd>S</kbd><span>Main / reverse thrust</span></div><div><kbd>A</kbd><kbd>D</kbd><span>Rotate left / right</span></div><div><kbd>Q</kbd><kbd>E</kbd><span>Strafe left / right</span></div><div><kbd>Shift</kbd><span>Hard burn · more heat</span></div><div><kbd>Space</kbd><span>Fire primary mounts</span></div><div><kbd>G</kbd><span>Guided missiles</span></div><div><kbd>C</kbd><span>Mining tools</span></div><div><kbd>Mouse</kbd><span>Aim the turrets</span></div><div><kbd>X</kbd><span>Braking thrusters</span></div><div><kbd>F</kbd><span>Attitude assist</span></div><div><kbd>R</kbd><span>Scan, recover, dock</span></div><div><kbd>M</kbd><span>Sector chart</span></div><div><kbd>Esc</kbd><span>Pause</span></div></div><div class="manual-mission"><strong>Contract ${CONTRACTS[0].id} · ${CONTRACTS[0].title}</strong><p>Pull the relay telemetry first: it resolves the archive contacts. Hold station inside the scan envelope to resolve a contact, then approach under 12 m/s. Retrieval arms collect scanned cargo automatically; R collects immediately. Enter Wayfarer’s marked ring below 8 m/s to dock automatically, or press R. Contact with the station hull is not required. Wayfarer pays on delivery — and pays extra for the black box still aboard the wreck of Kite’s End.</p></div><button class="primary-button" id="manual-close">Understood ${icon('check')}</button>`);
   $('#manual-close').addEventListener('click', closeDialog);
 }
 
@@ -682,7 +641,8 @@ function resetSortie(shipClass: ShipClass = state.shipClass, build?: Build) {
   for (const ally of [...allies]) removeAlly(ally.id);
   hostiles = []; pendingBounty = 0;
   for (const rock of [...fragments]) { grid.remove(rock); scene.removeRock(rock.id); }
-  fragments.length = 0; ore.length = 0; oreHeld = 0; firing = false; mining = false; aimFromPointer = false;
+  dockCapture = 0; recoveryCapture = 0; dockLatched = false;
+  fragments.length = 0; ore.length = 0; oreHeld = 0; firing = false; mining = false; missileFiring = false; aimFromPointer = false;
   for (const rock of obstacles) {
     grid.remove(rock); rock.hp = rock.maxHp; grid.add(rock);
     scene.removeRock(rock.id); scene.spawnRock(rock);
@@ -906,9 +866,18 @@ function updateHUD(now: number) {
   weighBar($('#readout-hold'), oreHeld > 0, capacity > 0 && oreHeld >= capacity);
   $('#hold-bar').style.width = `${fill * 100}%`;
   applyPodFill(fill);
-  $('#weapons-strip').innerHTML = mounts.length
-    ? mounts.map(mount => `<span class="${mount.cooldown > 0.05 ? 'cooling' : ''}">${mount.spec.name.replace(/^(AC-\d+|Gauss lance|Mining cutter|Swarm rack).*/, '$1')}</span>`).join('')
-    : '<span>unarmed</span>';
+  const groups = [
+    { kind: 'kinetic', label: 'Primary guns', key: 'Space', active: firing },
+    { kind: 'missile', label: 'Guided missiles', key: 'G', active: missileFiring },
+    { kind: 'beam', label: 'Mining tools', key: 'C', active: mining },
+  ];
+  const weaponHTML = groups.map(group => {
+    const fitted = mounts.filter(mount => mount.spec.kind === group.kind);
+    const ready = fitted.filter(mount => mount.cooldown <= 0.05).length;
+    const range = fitted.length ? Math.max(...fitted.map(mount => mount.spec.range)) : 0;
+    return `<div class="weapon-row ${fitted.length ? '' : 'unequipped'} ${group.active ? 'firing' : ''}"><kbd>${group.key}</kbd><div><b>${group.label}</b><small>${fitted.length ? [...new Set(fitted.map(m => m.spec.name))].join(' / ') : 'Not fitted'}</small></div><span>${!fitted.length ? '—' : heat > 92 ? 'HOT' : group.active ? 'ACTIVE' : ready ? 'READY' : 'RELOAD'}<small>${range ? range + ' m' : ''}</small></span></div>`;
+  }).join('');
+  if ($('#weapons-strip').innerHTML !== weaponHTML) $('#weapons-strip').innerHTML = weaponHTML;
   $('#weapons-strip').classList.toggle('hot', heat > 92);
   $('#weapons-strip').classList.toggle('is-critical', heat > 92);
   const engaging = hostiles.some(hostile => hostile.mode === 'attack');
@@ -933,7 +902,12 @@ function updateHUD(now: number) {
     const reachable = mounts.some(mount => mount.spec.kind !== 'beam' && mount.spec.range >= range);
     $('#combat-target-range').textContent = `${formatDistance(range)} · ${reachable ? 'Weapons in range' : 'Close to weapons range'} · Tab cycles`;
   }
+  $('#objective-detail').textContent = stage(run).objectives.map(o => o.label).join(' · ');
   $('#target-summary').textContent = targetName();
+  const targetVelocity = enemy?.state.velocity ?? { x: 0, y: 0 };
+  const targetDistance = target ? distance(state.position, target) : 0;
+  const closing = target && targetDistance > 0 ? ((state.velocity.x - targetVelocity.x) * (target.x - state.position.x) + (state.velocity.y - targetVelocity.y) * (target.y - state.position.y)) / targetDistance : 0;
+  $('#target-closing').textContent = target ? `${Math.abs(closing).toFixed(1)} m/s ${closing >= 0 ? 'closing' : 'separating'}` : 'Select a contact on the chart';
   $('#target-range').textContent = target ? formatDistance(distance(state.position, target)) : '—';
   const maxBrake = spec.thrust / (spec.mass + state.fuel) * 0.65;
   const stoppingDistance = speed * speed / (2 * maxBrake);
@@ -946,11 +920,19 @@ function updateHUD(now: number) {
   const scanning = activeScan();
   const prompt = $('#action-prompt');
   const fullHold = capacity > 0 && oreHeld >= capacity;
-  const urgent = state.fuel <= 0 || tooFast || fullHold;
+  const stationRange = distance(state.position, STATION);
+  const nearStation = stationRange <= dockingRadius(state) + 300;
+  const selectedCargo = cargos.find(cargo => cargo.id === targetId && !cargo.collected);
+  const nearCargo = selectedCargo && stationRange > dockingRadius(state) && distance(state.position, selectedCargo.position) < 500;
+  const urgent = state.fuel <= 0 || tooFast || fullHold || nearStation || !!nearCargo;
   interactButton.hidden = !(recoverable || canDockNow || scanning);
   interactButton.disabled = !!scanning && !(recoverable || canDockNow);
   interactButton.innerHTML = scanning ? `Scanning ${Math.round(scanning.progress * 100)}%` : recoverable ? `${recoverable.kind === 'blackbox' ? 'Recover black box' : 'Recover archive'} <kbd>R</kbd>` : `Dock at Wayfarer <kbd>R</kbd>`;
   $('#flight-tip').textContent = state.fuel <= 0 ? 'Propellant exhausted — return to the hangar to relaunch.'
+    : canDockNow ? dockLatched ? 'Docked · repaired & refueled. W to depart.' : 'Docking clearance. Hold position for capture, or press R.'
+    : nearStation ? speed >= DOCK_SPEED ? 'Wayfarer approach: hold X to slow below 8 m/s.' : `Close to the docking ring · ${Math.ceil(Math.max(0, stationRange - dockingRadius(state)))} m to clearance.`
+    : recoverable ? 'Retrieval arms ready. Hold position to collect, or press R.'
+    : nearCargo && !scanning ? speed >= 12 ? 'Retrieval approach: hold X to slow below 12 m/s.' : `Close to ${Math.ceil(recoveryRadius(state, selectedCargo!))} m. Scan first, then recover automatically.`
     : tooFast ? 'Too fast for approach — hold X to brake.'
     : fullHold ? 'Hold full. Dock at Wayfarer to sell ore, repair and refuel.'
     : scanning ? `Hold this vector to resolve ${scanning.name}.`
@@ -1080,7 +1062,7 @@ function activeScan() {
     const cargo = cargos.find(entry => entry.id === id);
     if (!cargo || cargo.collected || isScanned(run, cargo.id)) continue;
     const spec = scanSpec(cargo, state.spec.scanScale ?? 1);
-    if (distance(state.position, cargo.position) < spec.radius && speed < spec.speed) {
+    if (distance(state.position, cargo.position) < Math.max(spec.radius, recoveryRadius(state, cargo) + 60) && speed < spec.speed) {
       return { id: cargo.id, name: cargo.name, position: cargo.position, progress: scanProgress(run, cargo.id, spec) };
     }
   }
@@ -1110,8 +1092,8 @@ function updateLabels() {
     const point = scene.project(pos, 12);
     let x = point.x, y = point.y;
     // Markers live in the space the four corner clusters leave free.
-    const left = mobile ? 24 : 46, right = bounds.width - (mobile ? 24 : 46);
-    const top = mobile ? 156 : 140, bottom = bounds.height - (mobile ? 224 : 205);
+    const left = mobile ? 22 : 46, right = bounds.width - (mobile ? 155 : 220);
+    const top = mobile ? 245 : 270, bottom = bounds.height - (mobile ? 390 : 330);
     const offscreen = x < left || x > right || y < top || y > bottom;
     if (offscreen) { x = clamp(x, left, Math.max(left, right)); y = clamp(y, Math.min(top, bottom), bottom); }
     y = clamp(y, 34, bounds.height - 32);
@@ -1134,7 +1116,7 @@ function updateLabels() {
     const left = mobile ? 24 : 40, right = bounds.width - (mobile ? 24 : 40);
     marker.classList.toggle('edge-right', offscreen && x >= right - 1);
     marker.classList.toggle('edge-left', offscreen && x <= left + 1);
-    marker.hidden = (!point.visible && !offscreen) || scene.cinematic;
+    marker.hidden = (!point.visible && !offscreen) || scene.cinematic || (scene.mode !== 'map' && id !== targetId && !(id.startsWith('hostile-') && distance(state.position, targetPosition(id) ?? state.position) < 650));
     marker.classList.toggle('offscreen', offscreen);
     marker.style.setProperty('--bearing', `${Math.atan2(point.y - bounds.height / 2, point.x - bounds.width / 2) + Math.PI / 2}rad`);
     const shape = marker.querySelector<HTMLElement>('.marker-shape')!;
@@ -1186,12 +1168,12 @@ function frame(now: number) {
   const stopped = !running || paused || modalOpen || hiddenPaused || crashed;
   if (flow === 'launch') {
     launchTimer += delta;
-    scene.launch = Math.min(1, launchTimer / 3.6);
-    if (launchTimer >= 4.4) finishLaunch();
+    scene.launch = Math.min(1, launchTimer / 0.9);
+    if (launchTimer >= 1.2) finishLaunch();
   }
   if (!stopped) {
     accumulator += delta;
-    const scripted = flow === 'launch' ? Math.max(0, 1 - launchTimer / 2.4) * 0.5 : 0;
+    const scripted = flow === 'launch' ? Math.max(0, 1 - launchTimer / 0.9) * 0.5 : 0;
     const input: FlightInput = {
       thrust: scripted || (keys.has('KeyW') || keys.has('ArrowUp') ? burnLimit : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 0.28 : 0),
       turn: scripted ? 0 : (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0) - (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0),
@@ -1233,6 +1215,13 @@ function stepSimulation(input: FlightInput, dt: number) {
   grid.near(state.position.x, state.position.y, nearby);
   for (const rock of nearby) resolveCollision(state, rock);
   resolveBodies(state, dockable(run, world()));
+  // Slow, deliberate approaches capture outside the physical station and wreck colliders.
+  if (distance(state.position, STATION) > dockingRadius(state) + 30 || Math.abs(input.thrust) > 0) dockLatched = false;
+  const wantsDock = targetId === 'station' || stage(run).objectives.some(objective => objective.kind === 'dock');
+  dockCapture = !dockLatched && wantsDock && dockable(run, world()) && !input.thrust ? dockCapture + dt : 0;
+  const recoverable = interactive(run, world());
+  recoveryCapture = recoverable ? recoveryCapture + dt : 0;
+  if (recoveryCapture >= 0.65 || dockCapture >= 0.8) { interact(); recoveryCapture = 0; dockCapture = 0; }
   if (before - state.hull > 2 && elapsed - lastCollisionNotice > 2) {
     const damage = before - state.hull;
     scene.impact(state.position, clamp(damage / 22, 0.35, 1.4));
@@ -1278,8 +1267,8 @@ function collapseBeams() {
 /** Guns, beams, ore and fragments all step inside the fixed 120 Hz step, never in `frame`. */
 function stepWeapons(dt: number) {
   if (flow === 'flight' && !paused && !modalOpen) {
-    fireMounts(mounts, state, aim, firing, rounds, 0, SHIP_SCALE, dt, (mx, my) => { scene.hitFlash(mx, my); sound.shot('kinetic'); });
-    const beams = stepBeams(mounts, state, grid, mining, SHIP_SCALE, dt);
+    fireMounts(mounts, state, aim, firing, rounds, 0, SHIP_SCALE, dt, (mx, my) => { scene.hitFlash(mx, my); sound.shot('kinetic'); }, missileFiring);
+    const beams = stepBeams(mounts, state, grid, mining, SHIP_SCALE, dt, SOLID_BODIES);
     // The pool is preallocated: fill it and collapse the unused slots to zero-length.
     for (let i = 0; i < beamVisuals.length; i++) {
       const entry = beamVisuals[i];
@@ -1435,6 +1424,7 @@ function interact() {
     return;
   }
   if (dockable(run, world())) {
+    dockLatched = true;
     state.velocity = { x: 0, y: 0 }; state.angularVelocity = 0;
     state.fuel = state.spec.fuel; state.hull = state.spec.hull; state.heat = 0;
     scene.dockPulse(); sound.ping();
@@ -1453,7 +1443,12 @@ function interact() {
   }
   const scan = activeScan();
   if (scan) { toast(`Hold station and let the sensor mast resolve ${scan.name}.`); return; }
-  toast('Fly closer to a contact to scan, recover or dock.');
+  if (distance(state.position, STATION) < dockingRadius(state) + 450) {
+    toast(length(state.velocity) >= DOCK_SPEED ? 'Docking: hold X to slow below 8 m/s, then enter the marked ring.' : 'Close to the marked docking ring, then press R or hold position.');
+  } else {
+    const cargo = cargos.find(cargo => cargo.id === targetId && !cargo.collected);
+    toast(cargo ? `Retrieval: scan the contact, close within ${Math.ceil(recoveryRadius(state, cargo))} m and slow below 12 m/s.` : 'Select a contact. Close slowly to scan, recover or dock.');
+  }
 }
 
 /** The contract is closed: pay out, bank the salvage, and show the ledger. */
@@ -1518,10 +1513,7 @@ function finishLaunch() {
   navTarget = suggestTarget(run, world());
   if (navTarget) targetId = navTarget.id;
   updateContacts(); updateMissionPanel();
-  const name = navTarget?.name ?? 'the nearest contact';
-  const range = navTarget ? formatDistance(distance(state.position, navTarget.position)) : '—';
-  banner('Sortie launched', `Track ${name} · ${range}`);
-  toast(`Main drive released. ${run.contract.kicker} — ${stage(run).objectives[0].label}.`);
+  toast('W thrust · X brake · Space guns · G missiles · C mining · R interact');
 }
 
 document.querySelectorAll<HTMLButtonElement>('[data-view]').forEach(button => button.addEventListener('click', () => {
@@ -1545,7 +1537,7 @@ $('#sound-button').addEventListener('click', async () => {
 $('#title-begin').addEventListener('click', () => { sound.ping(); showHangar(); });
 $('#title-hangar').addEventListener('click', () => { sound.ping(); showHangar(); });
 $('#title-manual').addEventListener('click', showHelp);
-$('#hangar-back').addEventListener('click', showTitle);
+$('#hangar-back').addEventListener('click', showHelp);
 $('#hangar-shipyard').addEventListener('click', () => { sound.ping(); showBuilder(); });
 $('#launch-sortie').addEventListener('click', () => {
   callsign = ($<HTMLInputElement>('#callsign').value.trim() || 'Rook').slice(0, 14);
@@ -1586,7 +1578,7 @@ $('#throttle').addEventListener('input', event => { const value = Number((event.
 
 const flightKeys = ['KeyW', 'KeyS', 'KeyA', 'KeyD', 'KeyQ', 'KeyE', 'KeyX', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ShiftLeft', 'ShiftRight'];
 window.addEventListener('keydown', event => {
-  if (!scene || event.target instanceof HTMLInputElement || event.ctrlKey || event.metaKey || event.altKey) return;
+  if (!scene || (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) || event.ctrlKey || event.metaKey || event.altKey) return;
   if (flow === 'launch') { if (event.code !== 'Escape') { finishLaunch(); } return; }
   if (modalOpen) { if (event.code === 'Escape') closeDialog(); return; }
   if (event.target instanceof HTMLButtonElement && (event.code === 'Space' || event.code === 'Enter')) return;
@@ -1597,11 +1589,12 @@ window.addEventListener('keydown', event => {
   }
   if (modalOpen) { if (event.code === 'Escape') closeDialog(); return; }
   if (event.target instanceof HTMLButtonElement && (event.code === 'Space' || event.code === 'Enter')) return;
-  if (flightKeys.includes(event.code) || ['Space', 'KeyC', 'KeyF', 'KeyR', 'KeyM', 'KeyV', 'KeyH', 'Escape', 'Tab'].includes(event.code)) event.preventDefault();
+  if (flightKeys.includes(event.code) || ['Space', 'KeyC', 'KeyG', 'KeyF', 'KeyR', 'KeyM', 'KeyV', 'KeyH', 'Escape', 'Tab'].includes(event.code)) event.preventDefault();
   if (flightKeys.includes(event.code) && !paused) keys.add(event.code);
   if (event.repeat) return;
   if (event.code === 'Space') { if (paused) setPaused(false); else firing = true; }
-  if (event.code === 'KeyC') mining = true;
+  if (event.code === 'KeyC' && !paused) mining = true;
+  if (event.code === 'KeyG' && !paused) missileFiring = true;
   if (event.code === 'Escape') setPaused(!paused);
   if (event.code === 'Tab') cycleHostileTarget();
   if (event.code === 'KeyF') toggleAssist();
@@ -1614,54 +1607,33 @@ window.addEventListener('keyup', event => {
   keys.delete(event.code);
   if (event.code === 'Space') firing = false;
   if (event.code === 'KeyC') mining = false;
+  if (event.code === 'KeyG') missileFiring = false;
 });
-window.addEventListener('blur', () => { keys.clear(); firing = false; mining = false; });
-document.addEventListener('visibilitychange', () => { hiddenPaused = document.hidden; keys.clear(); lastFrame = performance.now(); });
+window.addEventListener('blur', () => { keys.clear(); firing = false; mining = false; missileFiring = false; });
+document.addEventListener('visibilitychange', () => { hiddenPaused = document.hidden; keys.clear(); firing = false; mining = false; missileFiring = false; lastFrame = performance.now(); });
 document.querySelectorAll<HTMLButtonElement>('[data-key]').forEach(button => {
   button.addEventListener('pointerdown', event => { event.preventDefault(); if (paused || modalOpen || crashed || flow !== 'flight') return; button.setPointerCapture(event.pointerId); keys.add(button.dataset.key!); button.classList.add('pressed'); });
   for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) button.addEventListener(type, () => { keys.delete(button.dataset.key!); button.classList.remove('pressed'); });
 });
 document.querySelectorAll<HTMLButtonElement>('[data-trigger]').forEach(button => {
-  const flag = button.dataset.trigger === 'fire' ? 'fire' : 'mine';
+  const flag = button.dataset.trigger;
   button.addEventListener('pointerdown', event => {
     event.preventDefault();
     if (paused || modalOpen || crashed || flow !== 'flight') return;
     button.setPointerCapture(event.pointerId);
     button.classList.add('pressed');
-    if (flag === 'fire') firing = true; else mining = true;
+    if (flag === 'fire') firing = true; else if (flag === 'missile') missileFiring = true; else mining = true;
   });
   for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) button.addEventListener(type, () => {
     button.classList.remove('pressed');
-    if (flag === 'fire') firing = false; else mining = false;
+    if (flag === 'fire') firing = false; else if (flag === 'missile') missileFiring = false; else mining = false;
   });
 });
 window.addEventListener('pointerdown', event => { if (flow === 'launch' && !(event.target instanceof HTMLButtonElement)) finishLaunch(); });
 
 function showShipyard() {
-  const builds = profile.builds;
-  const list = builds.length
-    ? `<div class="yard-builds">${builds.map(build => `<button class="yard-build ${profile.activeShip.kind === 'build' && profile.activeShip.id === build.id ? 'active' : ''}" data-load="${build.id}">
-        <b>${escapeHtml(build.name)}</b><small>${CORES[build.core]?.name ?? 'Custom'} · ${derive(build).gees.toFixed(2)} g · ${derive(build).mounts.length} guns</small></button>`).join('')}</div>`
-    : '<p class="dialog-description">No yard builds yet. The shipyard assembles a hull around a core, socket by socket.</p>';
-  openDialog(`<span class="dialog-kicker">Independent fleet</span><h2 id="dialog-title">Find your kind of trouble.</h2><p class="dialog-description">Three ships. Three ways through the belt. Switching vessels starts a fresh sortie with the contract reset.</p><div class="shipyard-bay" id="shipyard-bay"></div>${innerHangar()}${list}<button class="primary-button" id="shipyard-build">Open the shipyard ${icon('ship')}</button>`, true);
-  hydrateBay($('#shipyard-bay'), state.shipClass);
-  document.querySelectorAll<HTMLButtonElement>('#dialog-content [data-load]').forEach(button => button.addEventListener('click', () => {
-    const build = profile.builds.find(entry => entry.id === button.dataset.load);
-    if (!build) return;
-    launchBuild(build);
-    closeDialog();
-    toast(`${build.name} is ready. Your new sortie has begun.`);
-  }));
-  document.querySelectorAll<HTMLButtonElement>('#dialog-content [data-ship]').forEach(button => button.addEventListener('click', () => {
-    const type = button.dataset.ship as ShipClass;
-    if (type === state.shipClass && !sortieBuild) { toast(`${SHIPS[type].name} stays your vessel.`); return; }
-    profile.activeShip = { kind: 'stock', id: type };
-    save(profile);
-    launchStock(type);
-    closeDialog();
-    toast(`${SHIPS[type].name} is ready. Your new sortie has begun.`);
-  }));
-  $('#shipyard-build')?.addEventListener('click', () => { closeDialog(); showBuilder(); });
+  setPaused(false);
+  showBuilder(sortieBuild ?? activeBuild());
 }
 
 async function boot() {
@@ -1686,11 +1658,13 @@ async function boot() {
           state, cargos, elapsed, paused, modalOpen, flow, crashed,
           tactical: scene.mode === 'map', zoom: scene.zoom, mapZoom: scene.mapZoom,
           recoveredCount: cargos.filter(cargo => cargo.kind === 'archive' && cargo.collected).length,
+          docking: { ready: dockable(run, world()), radius: dockingRadius(state), latched: dockLatched },
           scanned: [...run.scanned], payout: run.payout, failed: run.failed ?? null,
           navTarget: navTarget?.id ?? null, target: targetId, nav: navTarget ? { id: navTarget.id, name: navTarget.name, x: navTarget.position.x, y: navTarget.position.y } : null, allies: allies.map(ally => ({ id: ally.id, hull: Math.round(ally.state.hull), x: Math.round(ally.state.position.x), y: Math.round(ally.state.position.y), waypoint: ally.waypoint })),
           missionComplete: run.complete, contract: run.contract.id, stage: run.stageIndex, callsign,
           combat: {
             weapons: mounts.map(mount => mount.spec.id),
+            missiles: rounds.life.reduce((n, life, i) => n + (life > 0 && rounds.kind[i] === 1 ? 1 : 0), 0),
             bearings: mounts.map(mount => Number(mount.bearing.toFixed(3))),
             liveRounds: rounds.life.reduce((count, life) => count + (life > 0 ? 1 : 0), 0),
             roundPositions: (() => {

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { bodyAt, createShip, fractureRock, ORE_PICKUP_RADIUS, rockHP, resolveShipCollision, SOLID_BODIES, SpatialGrid, STATION, stepOre } from '../src/physics';
 import type { Obstacle, Ore, SolidBody } from '../src/physics';
-import { createHostile, fireMounts, HOSTILES, Rounds, stepBeams, stepHostile, stepRounds, WEAPONS, wrapAngle } from '../src/combat';
+import { createHostile, fireMounts, HOSTILES, interceptPoint, Rounds, stepBeams, stepHostile, STOCK_MOUNTS, TURRET_TRAVERSE_RATE, stepRounds, WEAPONS, wrapAngle } from '../src/combat';
 import type { Mount } from '../src/combat';
 
 const DT = 1 / 120;
@@ -125,7 +125,8 @@ describe('firing', () => {
     // Forward is 620 m/s along the hull bearing; the stern-ward aim only shifts it within the arc.
     expect(Math.hypot(rounds.vx[index], rounds.vy[index])).toBeGreaterThan(560);
     expect(Math.hypot(rounds.vx[index] - ship.velocity.x, rounds.vy[index] - ship.velocity.y)).toBeCloseTo(WEAPONS.ac20.speed, 0);
-    expect(Math.abs(mounts[0].bearing)).toBeCloseTo(WEAPONS.ac20.arc, 6);
+    expect(Math.abs(mounts[0].bearing)).toBeLessThan(WEAPONS.ac20.arc);
+    expect(Math.abs(mounts[0].bearing)).toBeLessThanOrEqual(TURRET_TRAVERSE_RATE * DT + 1e-9);
     expect(Math.abs(wrapAngle(mounts[0].bearing))).toBeLessThanOrEqual(WEAPONS.ac20.arc + 1e-9);
   });
 
@@ -138,6 +139,46 @@ describe('firing', () => {
     expect(index).toBeGreaterThanOrEqual(0);
     expect(rounds.kind[index]).toBe(1);
     expect(ship.fuel).toBeLessThan(ship.spec.fuel);
+  });
+
+  test('primary and missile triggers are separated in one cooldown pass', () => {
+    const ship = createShip();
+    const mounts = [mount('ac20'), mount('swarm', { cooldown: 0.05 })];
+    const rounds = new Rounds();
+    fireMounts(mounts, ship, { x: 400, y: 0 }, true, rounds, 0, 1, DT, undefined, false);
+    expect(rounds.kind.some(kind => kind === 0 && rounds.life.some(life => life > 0))).toBe(true);
+    expect(rounds.kind.some((kind, i) => kind === 1 && rounds.life[i] > 0)).toBe(false);
+    expect(mounts[1].cooldown).toBeCloseTo(0.05 - DT, 6);
+
+    mounts[1].cooldown = 0;
+    fireMounts(mounts, ship, { x: -400, y: 0 }, false, rounds, 0, 1, DT, undefined, true);
+    expect(mounts[1].cooldown).toBeCloseTo(1 / WEAPONS.swarm.rof, 6);
+    expect(rounds.kind.some((kind, i) => kind === 1 && rounds.life[i] > 0)).toBe(true);
+  });
+
+  test('the new weapon roles have bounded control characteristics', () => {
+    expect(WEAPONS.pdc.kind).toBe('kinetic');
+    expect(WEAPONS.pdc.damage).toBeLessThan(WEAPONS.ac20.damage);
+    expect(WEAPONS.pdc.rof).toBeGreaterThan(WEAPONS.ac20.rof);
+    expect(WEAPONS.pdc.arc).toBeCloseTo(Math.PI, 8);
+    expect(WEAPONS.torpedo.kind).toBe('missile');
+    expect(WEAPONS.torpedo.rof).toBeLessThan(WEAPONS.swarm.rof);
+    expect(WEAPONS.torpedo.range).toBeGreaterThan(WEAPONS.swarm.range);
+    expect(WEAPONS.plasma.kind).toBe('beam');
+    expect(WEAPONS.plasma.range).toBe(360);
+    expect(WEAPONS.plasma.damage).toBeGreaterThan(WEAPONS.cutter.damage);
+    expect(WEAPONS.plasma.rockBonus).toBeGreaterThan(WEAPONS.cutter.rockBonus);
+  });
+
+  test('the intercept helper leads a moving target at projectile speed', () => {
+    const point = interceptPoint({ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 0, y: 10 }, 50);
+    expect(point.x).toBe(100);
+    expect(point.y).toBeCloseTo(1000 / Math.sqrt(2400), 6);
+  });
+
+  test('stock ships expose their combat and mining tools', () => {
+    expect(STOCK_MOUNTS.kestrel.map(mount => mount.weapon)).toEqual(['ac20', 'ac20', 'cutter', 'swarm']);
+    expect(STOCK_MOUNTS.needle.map(mount => mount.weapon)).toEqual(['ac20', 'ac20', 'gauss', 'torpedo']);
   });
 
   test('a missile turns only within its bounded guidance rate', () => {
@@ -214,6 +255,29 @@ describe('beams', () => {
     expect(hits[0].rock).toBeUndefined();
     expect(target.hp).toBe(target.maxHp);
     expect(stepBeams(mounts, ship, grid, false, 1, DT)).toEqual([]);
+  });
+
+  test('a continuous beam finds the exact first small rock and stops there', () => {
+    const near = rock({ radius: 2, x: 72.5, y: 0 });
+    const far = rock({ radius: 8, x: 105, y: 0 });
+    const grid = new SpatialGrid([near, far]);
+    const ship = createShip();
+    ship.angle = -Math.PI / 2;
+    const hit = stepBeams([mount('plasma')], ship, grid, true, 1, DT)[0];
+    expect(hit.rock).toBe(near);
+    expect(hit.ex).toBeCloseTo(near.x - near.radius, 5);
+    expect(far.hp).toBe(far.maxHp);
+  });
+
+  test('a solid body blocks a beam at its swept entry point', () => {
+    const grid = new SpatialGrid([]);
+    const ship = createShip();
+    ship.angle = -Math.PI / 2;
+    const body: SolidBody = { id: 'bulkhead', kind: 'circle', x: 80, y: 0, radius: 6, restitution: 1 };
+    const hit = stepBeams([mount('plasma')], ship, grid, true, 1, DT, [body])[0];
+    expect(hit.blocked).toBe(true);
+    expect(hit.rock).toBeUndefined();
+    expect(hit.ex).toBeCloseTo(body.x - body.radius, 5);
   });
 });
 

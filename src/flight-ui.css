@@ -1,0 +1,203 @@
+/* Legible bridge instruments and a single departure screen. */
+:root { --etch-dim: #a9bdc9; --muted: #a0b5c2; }
+.game-shell { min-height: 0; }
+select { font: inherit; color: #e4eff4; color-scheme: dark; }
+select:focus-visible, summary:focus-visible { outline: 2px solid #efb879; outline-offset: 3px; }
+.hud-mark, .bar-value, .toggle { opacity: 1; }
+.hud-mark { color: #dce6e8; }
+.hud-top-left, .hud-top-right, .hud-bottom-left, .hud-bottom-right, .navigation-info, .hud-centre {
+  background: #0b1723ed; border: 1px solid #526e824d; box-shadow: 0 6px 24px #02070c55; text-shadow: none;
+}
+.hud-top-left { top: 20px; left: 20px; width: 300px; max-width: none; padding: 16px; gap: 9px; border-top: 2px solid #83b9b5; }
+.hud-top-left .brand { display: none; }
+.contract-line { flex-direction: column; gap: 4px; }
+.contract-line .contract-id { font-size: 12px; letter-spacing: 1.6px; color: #abc5d3; }
+.contract-line strong { font-size: 20px; font-weight: 600; }
+.contract-rule { width: 100%; height: 4px; }
+.contract-count { justify-content: space-between; width: 100%; font-size: 13px; }
+.contract-count #cargo-count { font-size: 17px; }
+#objective-detail { margin: 0; color: #c2d3dd; font-size: 14px; line-height: 1.45; }
+.target-telemetry { width: 100%; margin: 4px 0 0; padding: 10px; }
+.target-telemetry > span, .target-telemetry > strong { font-size: 14px; }
+.target-telemetry > small { font-size: 12px; line-height: 1.4; color: #efb8ae; }
+.hud-top-right { top: 20px; right: 20px; padding: 7px; gap: 6px; }
+.nav-button, .hud-top-right .icon-button { width: 36px; height: 36px; }
+.nav-button .icon, .hud-top-right .icon-button .icon { width: 19px; height: 19px; }
+.session { font: 500 14px 'Barlow', sans-serif; }
+.navigation-info { position: absolute; right: 20px; top: 84px; width: 270px; padding: 14px 16px; display: flex; flex-direction: column; align-items: flex-start; gap: 5px; border-left: 2px solid #83b9b5; }
+.navigation-info .instrument-caption { font-size: 11px; letter-spacing: 1.6px; color: #9db6c6; }
+#target-summary { font-size: 16px; color: #e2edf3; }
+#target-range { font: 500 30px/1.1 'Barlow Condensed', sans-serif; color: #e6f1f5; }
+#target-closing, #target-speed { color: #b7ccd8; font-size: 13px; }
+.navigation-info.approach-warning { border-left-color: #efb879; }
+.navigation-info.approach-warning #target-speed { color: #ffd29a; font-weight: 600; }
+.hud-bottom-left { left: 20px; bottom: 20px; width: 274px; padding: 16px; gap: 12px; }
+.bars { gap: 10px; }
+.bar { display: grid; grid-template-columns: 35px 1fr 66px; gap: 10px; }
+.bar-label { width: auto; font-size: 13px; color: #b6cad6; text-transform: uppercase; }
+.bar-track { width: 100%; height: 5px; background: #334654; }
+.bar-value { color: #eef6fa; font: 500 19px/1 'Barlow Condensed', sans-serif; text-align: right; }
+.bar-value small { font-size: 13px; color: #b6cad6; }
+.vessel-id { order: -1; padding-bottom: 10px; border-bottom: 1px solid #354756; justify-content: space-between; }
+.vessel-id strong { font-size: 18px; }
+.vessel-id button { min-width: 30px; min-height: 26px; }
+.toggles { flex-direction: column; gap: 7px; border-top: 1px solid #354756; padding-top: 10px; }
+.toggle { font-size: 13px; padding: 3px 0; }
+.toggle kbd { margin-left: auto; }
+.hud-bottom-right { right: 20px; bottom: 20px; width: 300px; padding: 14px; gap: 12px; align-items: stretch; }
+.viewport-tools { justify-content: flex-end; border-bottom: 1px solid #354756; padding-bottom: 6px; }
+.viewport-tools .icon-button { width: 30px; height: 26px; }
+.viewport-tools > span { font-size: 14px; }
+#weapons-strip { display: flex; flex-direction: column; gap: 0; }
+.weapon-row { display: grid; grid-template-columns: 38px 1fr auto; align-items: center; gap: 9px; padding: 8px 0; }
+.weapon-row + .weapon-row { border-top: 1px solid #ffffff12; }
+.weapon-row kbd { height: 25px; font-size: 12px; background: #1c2e3c; color: #e6eff4; }
+.weapon-row b { display: block; font-size: 14px; font-weight: 500; }
+.guns .weapon-row small { display: block; font-size: 11px; color: #b0c3d0; margin-top: 3px; }
+.weapon-row > span { color: #a4dbcd; font-size: 11px; text-align: right; }
+.weapon-row.unequipped > span { color: #9babb5; }
+.weapon-row.firing > span { color: #ffd29a; }
+.numerals { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; border-top: 1px solid #354756; padding-top: 10px; }
+.numerals > div > small { display: block; font-size: 10px; letter-spacing: .8px; margin-bottom: 4px; }
+.numerals span, .numerals #turn-rate { font: 500 20px 'Barlow Condensed', sans-serif; opacity: 1; }
+.numerals span small { font-size: 12px; }
+.hud-centre { bottom: 20px; padding: 12px 20px; width: min(330px, calc(100vw - 660px)); min-width: 190px; }
+.velocity strong { font-size: 48px; }
+.velocity > span, .velocity b { font-size: 13px; color: #c1d4df; }
+.velocity-rule { height: 3px; width: 100%; }
+.context { white-space: normal; flex-direction: column; text-align: center; font-size: 14px; line-height: 1.4; gap: 7px; }
+#interact-button { font-size: 14px; padding: 7px 14px; color: #e5f4ef; background: #254841; }
+.ship-label { display: none; }
+#collar-canvas { opacity: .46; }
+.world-marker strong { font-size: 14px; }
+.world-marker small { font-size: 12px; }
+.radar-plate { top: auto; bottom: 330px; right: 20px; }
+.stage-banner { top: 24%; max-width: 400px; padding: 12px 20px; background: #0b1723f2; border: 1px solid #435b6c; }
+.stage-banner strong { font-size: 23px; }
+#toast { top: auto; height: fit-content; max-width: min(540px, 90vw); font-size: 14px; line-height: 1.45; background: #112432f5; border: 1px solid #4c6578; padding: 11px 18px; bottom: 130px; }
+.paused-indicator { max-height: 80svh; overflow: auto; }
+.stage-row { font-size: 14px; }
+.stage-row small { font-size: 13px; }
+
+.hangar-screen { padding: 0; background: #09131e; }
+.hangar-header { height: 80px; padding: 0 38px; display: flex; align-items: center; gap: 26px; border-bottom: 1px solid #293c4b; background: #0b1723; }
+.hangar-header > div { display: flex; align-items: center; gap: 14px; }
+.hangar-header strong { font: 600 32px 'Barlow Condensed', sans-serif; letter-spacing: 2px; }
+.hangar-header strong span { color: #e0aa75; font-weight: 400; margin-left: 10px; }
+.hangar-header > div > span { color: #a6becd; font-size: 12px; letter-spacing: 2px; }
+.yard-free { color: #a4d4c7; font-size: 13px; margin-left: auto; }
+.hangar-header .ghost-button { width: auto; padding: 8px 12px; border: 1px solid #344a5b; color: #c8d9e3; }
+.hangar-grid { height: calc(100svh - 80px); max-width: none; width: 100%; margin: 0; padding: 28px 38px; grid-template-columns: minmax(0, 1fr) 350px; gap: 32px; align-items: stretch; }
+.hangar-bay { position: relative; min-height: 0; display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+.hangar-bay .bay-viewport { flex: 1; min-height: 230px; height: auto; border: 1px solid #263d4f; background: #0a1722; }
+.hangar-inspect-hint { position: absolute; top: 16px; left: 18px; pointer-events: none; color: #9bb6c8; font-size: 12px; letter-spacing: .3px; }
+.bay-strip-head { padding-top: 18px; }
+.bay-strip-head .section-label { font-size: 12px; letter-spacing: 1.5px; }
+.bay-strip-head .section-hint { font-size: 12px; color: #a3baca; }
+.hangar-screen .bay-strip { display: flex; flex-direction: row; gap: 7px; overflow-x: auto; padding-bottom: 3px; flex-shrink: 0; }
+.hangar-screen .bay-tab { display: flex; flex-direction: column; gap: 7px; min-width: 140px; padding: 14px; border: 1px solid #2c4152; }
+.hangar-screen .bay-tab.active { background: #1c303c; border-color: #83b9b5; }
+.hangar-screen .bay-tab::before { display: none; }
+.hangar-screen .bay-tab-name { font-size: 16px; }
+.hangar-screen .bay-tab-role { font-size: 12px; white-space: nowrap; }
+.hangar-brief { padding: 4px 4px 8px; display: flex; flex-direction: column; overflow: auto; gap: 0; border: 0; background: none; }
+.hangar-brief .dialog-kicker { font-size: 11px; letter-spacing: 2px; color: #a3c1d2; }
+.hangar-brief .brief-ship { margin: 8px 0 22px; padding: 0; border: 0; }
+.hangar-brief .brief-ship > h3 { font: 500 42px/1.05 'Barlow Condensed', sans-serif; margin: 8px 0; }
+.brief-ship p { color: #acbfcb; font-size: 14px; line-height: 1.5; }
+.brief-ship dt, .brief-ship dd { font-size: 14px !important; }
+.mission-picker { display: flex; flex-direction: column; gap: 9px; border-top: 1px solid #304452; padding-top: 20px; }
+.mission-picker > span { color: #a7c1d1; font-size: 13px; }
+.mission-picker select { width: 100%; padding: 12px; background: #142533; border: 1px solid #405a6c; font-size: 14px; }
+.hangar-brief h2 { font: 500 24px 'Barlow Condensed', sans-serif; margin: 18px 0 8px; }
+.hangar-brief .brief-copy { margin: 0 0 16px; color: #b1c6d3; font-size: 14px; line-height: 1.6; }
+.brief-details { font-size: 13px; color: #b0c7d4; margin-bottom: 20px; }
+.brief-details summary { cursor: pointer; padding: 5px 0; }
+.brief-details .brief-stages { margin-top: 14px; }
+.brief-details .brief-stages p { font-size: 13px; }
+.departure-actions { margin-top: auto; padding-top: 14px; }
+.departure-actions .primary-button { background: #e8b681; color: #15202a; font-size: 16px; min-height: 50px; border: 0; }
+.departure-actions .primary-button:hover { background: #ffcd96; }
+.departure-actions .ghost-button { margin-top: 8px; font-size: 15px; border: 1px solid #4b6b7b; color: #c4e3df; min-height: 46px; }
+.departure-actions p { font-size: 12px; text-align: center; color: #9bb5c7; }
+
+@media (max-width: 1050px) {
+  .hangar-grid { grid-template-columns: minmax(0, 1fr) 310px; gap: 20px; padding: 20px; }
+  .hangar-header { padding: 0 20px; }
+  .hud-top-left { width: 270px; }
+  .hud-bottom-left { width: 235px; padding: 12px; }
+  .hud-bottom-right { width: 255px; padding: 12px; }
+  .hud-centre { width: 220px; min-width: 0; }
+}
+@media (max-width: 760px) {
+  .hangar-screen { overflow-y: auto; }
+  .hangar-header { min-height: 64px; height: auto; padding: 12px 16px; flex-wrap: wrap; gap: 8px 14px; }
+  .hangar-header strong { font-size: 27px; }
+  .hangar-header > div > span { font-size: 10px; letter-spacing: 1px; }
+  .hangar-header .ghost-button { margin-left: auto; font-size: 12px; padding: 6px; }
+  .yard-free { order: 3; width: 100%; margin: 0; font-size: 12px; }
+  .hangar-grid { display: flex; flex-direction: column; height: auto; padding: 16px; gap: 22px; }
+  .hangar-bay { flex: none; min-height: 370px; overflow: visible; }
+  .hangar-bay .bay-viewport { flex: none; height: 265px; min-height: 0; }
+  .hangar-screen .bay-tab { min-width: 127px; padding: 10px; }
+  .hangar-brief { overflow: visible; padding: 0; }
+  .hangar-brief .brief-ship { margin-bottom: 16px; }
+  .hangar-brief .brief-ship dl { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 20px; }
+  .hangar-brief .brief-ship > h3 { font-size: 32px; }
+  .hud-top-right { top: 8px; left: 8px; right: 8px; justify-content: space-between; padding: 4px 6px; }
+  .hud-top-right .nav-icons { margin: 0; }
+  .hud-top-right .session { font-size: 12px; margin: 0; }
+  .hud-top-right .icon-button, .nav-button { width: 30px; height: 32px; }
+  .hud-top-left { top: 60px; left: 8px; width: calc(55% - 12px); padding: 10px; gap: 6px; }
+  .contract-line strong { font-size: 16px; }
+  .contract-line .contract-id { font-size: 10px; }
+  #objective-detail { font-size: 12px; line-height: 1.35; }
+  .contract-count { font-size: 11px; gap: 4px; }
+  .navigation-info { top: 60px; right: 8px; width: calc(45% - 12px); padding: 10px; gap: 4px; }
+  .navigation-info .instrument-caption { font-size: 9px; letter-spacing: .7px; }
+  #target-summary { font-size: 14px; }
+  #target-range { font-size: 26px; }
+  #target-speed, #target-closing { font-size: 11px; line-height: 1.4; }
+  .target-telemetry { padding: 6px; }
+  .target-telemetry > span, .target-telemetry > strong { font-size: 12px; }
+  .target-telemetry > small { font-size: 10px; }
+  .navigation-info > small, #flight-tip, .numerals #turn-rate { display: block; }
+  .hud-bottom-left .vessel-id, .hud-bottom-left .toggles { display: flex; }
+  .hud-bottom-left { left: 8px; right: auto; bottom: 96px; width: calc(50% - 16px); padding: 10px; gap: 8px; }
+  .hud-bottom-right { left: calc(50% + 8px); right: auto; bottom: 96px; width: calc(50% - 16px); padding: 9px; gap: 8px; }
+  .bars { gap: 9px; }
+  .bar { grid-template-columns: 30px 1fr 50px; gap: 5px; }
+  .bar-label { font-size: 11px; }
+  .bar-value { font-size: 17px; }
+  .bar-value small { font-size: 11px; }
+  .vessel-id { padding-bottom: 6px; }
+  .vessel-id strong { font-size: 16px; }
+  .toggles { gap: 4px; padding-top: 6px; }
+  .toggle { font-size: 11px; gap: 4px; }
+  .toggle kbd { font-size: 10px; }
+  .viewport-tools { display: none; }
+  .weapon-row { grid-template-columns: 29px 1fr; gap: 6px; padding: 6px 0; }
+  .weapon-row b { font-size: 12px; }
+  .weapon-row kbd { font-size: 10px; min-width: 0; padding: 2px; }
+  .guns .weapon-row small { font-size: 10px; }
+  .weapon-row > span { grid-column: 2; display: flex; gap: 8px; font-size: 10px; text-align: left; }
+  .guns .weapon-row > span small { margin: 0; }
+  .numerals { gap: 5px; padding-top: 7px; }
+  .numerals > div > small { font-size: 8px; letter-spacing: 0; }
+  .numerals span, .numerals #turn-rate { font-size: 15px; }
+  .numerals span small { font-size: 10px; }
+  .hud-centre { bottom: 340px; width: auto; max-width: calc(100% - 30px); padding: 7px 13px; }
+  .velocity strong { font-size: 32px; }
+  .velocity > span, .velocity b { font-size: 11px; }
+  .context { font-size: 12px; max-width: 240px; }
+  .touch-controls { left: 8px; right: 8px; bottom: 10px; gap: 6px; flex-wrap: wrap; }
+  .touch-steering { display: flex; gap: 6px; }
+  .touch-controls .touch-drive { display: flex; gap: 5px; flex: 1; flex-wrap: wrap; justify-content: flex-end; }
+  .touch-controls button { min-width: 42px; height: 34px; padding: 4px 8px; font-size: 11px; background: #152b3beb; }
+  .touch-controls .icon { width: 14px; height: 14px; }
+  #toast { bottom: 400px; font-size: 12px; padding: 9px 12px; }
+  .stage-banner { top: 32%; max-width: 80%; }
+  .stage-banner strong { font-size: 19px; }
+  .radar-plate { right: 10px; bottom: 345px; }
+  .paused-indicator { min-width: 0; width: calc(100% - 32px); padding: 20px; }
+}

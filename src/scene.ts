@@ -6,8 +6,8 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { armor as armorMaterial, buildBeacon, buildCargo, buildDerelict, buildGunMount, buildMine, buildRaider, buildShip, buildStation, buildTurret, cachedAsteroid, disposeObject, lightArmor as lightArmorMaterial, oreGeometry, oreShell as oreMaterial, oreVein as oreVeinMaterial } from './models';
 import type { HostileModel, ShipModel } from './models';
 import type { BuiltShip } from './build';
-import { BeamPool, makeDissolveMaterial, ParticleField, RingWaves, ShieldFlash, TracerPool } from './effects';
-import { DERELICT, randomSeed, RELAY, SECTOR, STATION } from './physics';
+import { BeamPool, makeDissolveMaterial, ParticleField, RingWaves, ShieldFlash, TracerPool, MissilePool } from './effects';
+import { canDock, dockingRadius, DERELICT, randomSeed, RELAY, SECTOR, STATION } from './physics';
 import type { Cargo, Obstacle, Ore, ShipClass, ShipState, Vec2 } from './physics';
 import { MAX_ROUNDS } from './combat';
 import type { Hostile, Mount, Rounds } from './combat';
@@ -73,6 +73,7 @@ export class SpaceScene {
   /** Hostile models by hostile id, driven from the frame each render. */
   hostileModels = new Map<number, HostileModel>();
   station: THREE.Group;
+  private dockingRing: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>;
   orbit = new THREE.Group();
   trajectory: THREE.Line;
   velocityVector: THREE.Line;
@@ -103,6 +104,7 @@ export class SpaceScene {
   private stationFlash = 0;
   private recovering: { mesh: THREE.Group; t: number }[] = [];
   private tracers: TracerPool;
+  private missiles: MissilePool;
   private beams: BeamPool;
   private oreShell: THREE.InstancedMesh;
   private oreVein: THREE.InstancedMesh;
@@ -154,6 +156,8 @@ export class SpaceScene {
       const mesh = buildCargo(i); mesh.position.set(cargo.position.x, cargo.position.y, 0);
       this.cargos.push({ cargo, mesh }); this.scene.add(mesh);
     });
+    this.dockingRing = new THREE.Mesh(new THREE.RingGeometry(.994, 1, 96), new THREE.MeshBasicMaterial({ color: '#83b9b5', transparent: true, opacity: .6, side: THREE.DoubleSide, depthWrite: false }));
+    this.dockingRing.position.set(STATION.x, STATION.y, 5); this.scene.add(this.dockingRing);
     this.station = buildStation(); this.station.position.set(STATION.x, STATION.y, -10); this.scene.add(this.station);
     this.station.traverse(child => {
       if (child instanceof THREE.Mesh && child.material instanceof THREE.MeshBasicMaterial) this.stationLamps.push(child.material);
@@ -203,7 +207,8 @@ export class SpaceScene {
     this.scanSweep.visible = false; this.scene.add(this.scanSweep);
 
     this.tracers = new TracerPool(MAX_ROUNDS); this.scene.add(this.tracers.lines);
-    this.beams = new BeamPool(4); this.scene.add(this.beams.group);
+    this.missiles = new MissilePool(MAX_ROUNDS); this.scene.add(this.missiles.group);
+    this.beams = new BeamPool(16); this.scene.add(this.beams.group);
     this.oreShell = new THREE.InstancedMesh(oreGeometry(), oreMaterial, MAX_ORE_INSTANCES);
     this.oreVein = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(7.6, 0), oreVeinMaterial, MAX_ORE_INSTANCES);
     this.oreShell.count = 0; this.oreVein.count = 0;
@@ -505,7 +510,7 @@ export class SpaceScene {
     for (const child of [...this.ship.group.children]) if (child.name === 'stock-weapon') disposeObject(child);
     this.gunPivots = [];
     for (const def of defs) {
-      const gun = buildGunMount(def.weapon as 'ac20' | 'ac70' | 'gauss' | 'cutter' | 'swarm');
+      const gun = buildGunMount(def.weapon as Parameters<typeof buildGunMount>[0]);
       gun.group.position.set(def.lx, def.ly, 13);
       this.ship.group.add(gun.group);
       this.gunPivots.push({ root: gun.group, pivot: gun.pivot });
@@ -686,6 +691,9 @@ export class SpaceScene {
       plate.rotation.z += dt * (i ? -0.05 : 0.07);
       plate.position.z = 3 + Math.sin(time * 0.3 + i) * 2.5;
     }
+    this.dockingRing.scale.setScalar(dockingRadius(state));
+    this.dockingRing.material.color.set(canDock(state) ? '#a5ead0' : '#efb879');
+    this.dockingRing.visible = !this.cinematic;
     this.stationFlash = Math.max(0, this.stationFlash - dt * 0.65);
     for (const material of this.stationLamps) material.color.setRGB(0.72 + this.stationFlash * 0.28, 0.87, 0.86 + this.stationFlash * 0.14);
     if (!this.reducedMotion) this.station.rotation.z += dt * 0.008;
@@ -738,7 +746,7 @@ export class SpaceScene {
       else this.damagePlate.rotation.set(Math.sin(time * 0.6) * 0.6, time * 0.45, state.angle + Math.sin(time * 0.31) * 0.5);
       this.damagePlate.visible = !map;
     }
-    if (frame.rounds) this.tracers.sync(frame.rounds);
+    if (frame.rounds) { this.tracers.sync(frame.rounds); this.missiles.sync(frame.rounds); }
     this.beams.sync(map ? [] : frame.beams ?? []);
     this.syncOre(frame.ore ?? []);
     const mounts = frame.mounts;

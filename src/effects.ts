@@ -140,6 +140,7 @@ export class RingWaves {
 
 const tracerPlayer = new THREE.Color('#cfe9ff');
 const tracerHostile = new THREE.Color('#ff8f72');
+const tracerMissile = new THREE.Color('#ffc38c');
 
 /** Live rounds as one LineSegments draw call: two vertices per round, no per-round Mesh. */
 export class TracerPool {
@@ -172,7 +173,7 @@ export class TracerPool {
       this.positions[o + 3] = rounds.x[i] - rounds.vx[i] * tail;
       this.positions[o + 4] = rounds.y[i] - rounds.vy[i] * tail;
       this.positions[o + 5] = 6;
-      const c = rounds.faction[i] ? tracerHostile : tracerPlayer;
+      const c = rounds.kind[i] === 1 ? tracerMissile : rounds.faction[i] ? tracerHostile : tracerPlayer;
       this.colors[o] = c.r; this.colors[o + 1] = c.g; this.colors[o + 2] = c.b;
       this.colors[o + 3] = c.r * 0.2; this.colors[o + 4] = c.g * 0.2; this.colors[o + 5] = c.b * 0.2;
     }
@@ -181,6 +182,45 @@ export class TracerPool {
   }
 
   dispose() { this.lines.geometry.dispose(); (this.lines.material as THREE.Material).dispose(); }
+}
+
+/** Guided ordnance uses two instanced draws regardless of the number in flight. */
+export class MissilePool {
+  readonly group = new THREE.Group();
+  private readonly bodies: THREE.InstancedMesh;
+  private readonly flames: THREE.InstancedMesh;
+  private readonly pose = new THREE.Object3D();
+
+  constructor(private readonly capacity: number) {
+    const body = new THREE.ConeGeometry(1.9, 13, 6);
+    body.translate(0, -4, 0);
+    this.bodies = new THREE.InstancedMesh(body, new THREE.MeshStandardMaterial({ color: '#dfdfcf', metalness: .65, roughness: .4 }), capacity);
+    const flame = new THREE.ConeGeometry(1.7, 13, 8);
+    flame.rotateZ(Math.PI); flame.translate(0, -16, 0);
+    this.flames = new THREE.InstancedMesh(flame, new THREE.MeshBasicMaterial({ color: '#ffb776', transparent: true, opacity: .85, depthWrite: false, blending: THREE.AdditiveBlending }), capacity);
+    for (const mesh of [this.bodies, this.flames]) {
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); mesh.frustumCulled = false; mesh.count = 0;
+      this.group.add(mesh);
+    }
+  }
+
+  sync(rounds: Rounds) {
+    let count = 0;
+    for (let i = 0; i < rounds.life.length && count < this.capacity; i++) {
+      if (rounds.life[i] <= 0 || rounds.kind[i] !== 1) continue;
+      this.pose.position.set(rounds.x[i], rounds.y[i], 7);
+      this.pose.rotation.z = Math.atan2(-rounds.vx[i], rounds.vy[i]);
+      this.pose.scale.setScalar(rounds.damage[i] >= 200 ? 1.35 : 1);
+      this.pose.updateMatrix();
+      this.bodies.setMatrixAt(count, this.pose.matrix); this.flames.setMatrixAt(count, this.pose.matrix); count++;
+    }
+    this.bodies.count = this.flames.count = count;
+    this.bodies.instanceMatrix.needsUpdate = this.flames.instanceMatrix.needsUpdate = true;
+  }
+
+  dispose() {
+    for (const mesh of [this.bodies, this.flames]) { mesh.geometry.dispose(); (mesh.material as THREE.Material).dispose(); }
+  }
 }
 
 const beamVertexShader = `

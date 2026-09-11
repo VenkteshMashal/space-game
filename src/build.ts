@@ -13,7 +13,7 @@ export type DerivedStats = {
   accel: number; gees: number; valid: boolean; problems: string[]; warnings: string[]; cost: number;
 };
 
-export type PresetId = 'balanced' | 'mining' | 'combat';
+export type PresetId = 'balanced' | 'mining' | 'combat' | 'patrol';
 type PresetPlacement = { part: string; category: PartCategory; quantity: number };
 export type BuildPreset = {
   id: PresetId; name: string; blurb: string; core: string; placements: PresetPlacement[];
@@ -21,6 +21,16 @@ export type BuildPreset = {
 
 /** Starter recipes describe intent; presetBuild places each part only on a compatible socket. */
 export const BUILD_PRESETS: readonly BuildPreset[] = [
+  { id: 'patrol', name: 'Corvette', blurb: 'Armored torchship with tracking PDCs, torpedoes and a mining lance.', core: 'aegis', placements: [
+    { part: 'eng-fusion', category: 'engine', quantity: 1 },
+    { part: 'tnk-m', category: 'tank', quantity: 1 },
+    { part: 'wpn-pdc', category: 'weapon', quantity: 1 },
+    { part: 'wpn-torpedo', category: 'weapon', quantity: 1 },
+    { part: 'wpn-plasma', category: 'weapon', quantity: 1 },
+    { part: 'crg-heavy', category: 'cargo', quantity: 1 },
+    { part: 'wng-split', category: 'wing', quantity: 1 },
+    { part: 'rcs-vector', category: 'rcs', quantity: 1 },
+  ] },
   {
     id: 'balanced', name: 'Balanced', blurb: 'A dependable two engine frame for first sorties.', core: 'spar',
     placements: [
@@ -63,7 +73,7 @@ function presetInfo(id: PresetId): BuildPreset {
   return BUILD_PRESETS.find(preset => preset.id === id) ?? BUILD_PRESETS[0];
 }
 
-/** Create a new recipe without granting any of its core or parts. */
+/** Create a new recipe using freely available components. */
 export function presetBuild(id: PresetId, buildId = `preset-${id}`, name = presetInfo(id).name): Build {
   const preset = presetInfo(id);
   const build = createBuild(preset.core, name, buildId);
@@ -93,31 +103,9 @@ export function presetBuild(id: PresetId, buildId = `preset-${id}`, name = prese
   return build;
 }
 
-function quoteForIds(ids: string[], owned: Iterable<string>): PurchaseQuote {
-  const carried = new Set(owned);
-  const seen = new Set<string>();
-  const items: PurchaseItem[] = [];
-  for (const id of ids) {
-    if (seen.has(id) || carried.has(id)) continue;
-    const core = CORES[id];
-    const part = PARTS[id];
-    if (!core && !part) continue;
-    seen.add(id);
-    items.push({ id, name: core?.name ?? part!.name, cost: core?.cost ?? part!.cost, kind: core ? 'core' : 'part' });
-  }
-  return { items, total: items.reduce((total, item) => total + item.cost, 0) };
-}
-
-/** The unique items still needed to make a saved build owned and launchable. */
-export function purchaseQuoteForBuild(build: Build, owned: Iterable<string>): PurchaseQuote {
-  const core = CORES[build.core];
-  if (!core) return { items: [], total: 0 };
-  const ids = [core.id];
-  for (const hardpoint of core.hardpoints) {
-    const part = PARTS[build.slots[hardpoint.id] ?? ''];
-    if (part && partFits(part, hardpoint)) ids.push(part.id);
-  }
-  return quoteForIds(ids, owned);
+/** Compatibility API: building never requires a purchase. */
+export function purchaseQuoteForBuild(_build: Build, _owned: Iterable<string>): PurchaseQuote {
+  return { items: [], total: 0 }; // Every frame and component is freely available.
 }
 
 export function purchaseQuoteForPreset(id: PresetId, owned: Iterable<string>): PurchaseQuote {
@@ -144,8 +132,8 @@ export function derive(build: Build): DerivedStats {
     fuel += part.fuel ?? 0; thrust += part.thrust ?? 0; hull += part.hull ?? 0;
     rawTorque += part.torque ?? 0; cargo += part.cargo ?? 0; cooling += part.cooling ?? 0;
     if (part.weapon) mounts.push({ weapon: part.weapon, lx: hardpoint.x, ly: hardpoint.y });
-    if (part.id === 'utl-scan') scanScale *= 0.5;
-    if (part.id === 'utl-coll') collectScale *= 3;
+    scanScale = Math.max(scanScale, part.scanScale ?? 1);
+    collectScale = Math.max(collectScale, part.collectScale ?? 1);
   }
 
   // Angular acceleration falls as mass grows. Normalising against the truss core's 34 t keeps the
@@ -181,7 +169,7 @@ export function derive(build: Build): DerivedStats {
   };
 }
 
-const CORE_LENGTH: Record<string, number> = { spar: 26, truss: 34, keel: 52 };
+const CORE_LENGTH: Record<string, number> = { spar: 26, truss: 34, keel: 52, aegis: 55 };
 
 /** DerivedStats -> the sim's ShipSpec. Above the sim, stock ships and custom builds are interchangeable. */
 export function buildSpec(build: Build): ShipSpec {
@@ -242,14 +230,14 @@ export function buildFromParts(build: Build): BuiltShip {
 }
 
 /** Install or clear a part, and its mirror in the same call. */
-export function toggleSlot(build: Build, hardpointId: string, partId: string | null): void {
+export function toggleSlot(build: Build, hardpointId: string, partId: string | null, mirrored = true): void {
   const core = CORES[build.core];
   if (!core) return;
   const slot = core.hardpoints.find(hardpoint => hardpoint.id === hardpointId);
   if (!slot) return;
   const part = partId ? PARTS[partId] : undefined;
   if (part && !partFits(part, slot)) return;
-  const mirrorOf = slot.mirrorOf;
+  const mirrorOf = mirrored ? slot.mirrorOf : undefined;
   const mirror = mirrorOf ? core.hardpoints.find(hardpoint => hardpoint.id === mirrorOf) : undefined;
   if (part && mirror && !partFits(part, mirror)) return;
   build.slots[hardpointId] = partId;

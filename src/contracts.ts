@@ -1,4 +1,4 @@
-import { canRecover, distance, length, RELAY, STATION } from './physics';
+import { canDock, canRecover, distance, length, recoveryRadius, RELAY, STATION } from './physics';
 import type { Cargo, ShipState, Vec2 } from './physics';
 import type { HostileKind } from './combat';
 
@@ -313,7 +313,7 @@ export function updateRun(run: Run, world: World, dt: number): RunSignal[] {
     if (cargo.collected || isScanned(run, cargo.id)) continue;
     const scanScale = (world.ship.spec as ShipState['spec'] & { scanScale?: number }).scanScale ?? 1;
     const spec = scanSpec(cargo, scanScale);
-    const inRange = distance(world.ship.position, cargo.position) < spec.radius && length(world.ship.velocity) < spec.speed;
+    const inRange = distance(world.ship.position, cargo.position) < Math.max(spec.radius, recoveryRadius(world.ship, cargo) + 60) && length(world.ship.velocity) < spec.speed;
     const previous = run.scan[cargo.id] ?? 0;
     run.scan[cargo.id] = inRange ? previous + dt : Math.max(0, previous - dt * 1.7);
     if (run.scan[cargo.id] >= spec.seconds) {
@@ -376,7 +376,7 @@ export function interactive(run: Run, world: World): Cargo | undefined {
 }
 
 export function recoverCargo(run: Run, cargo: Cargo, world: World): RunSignal[] {
-  if (cargo.collected || !isScanned(run, cargo.id)) return [];
+  if (run.complete || run.failed || !activeCargoIds(run, world).includes(cargo.id) || !isScanned(run, cargo.id) || !canRecover(world.ship, cargo)) return [];
   cargo.collected = true;
   return [{ type: 'recovered', cargo, remaining: remainingCargos(run, world) }];
 }
@@ -384,13 +384,13 @@ export function recoverCargo(run: Run, cargo: Cargo, world: World): RunSignal[] 
 /** Closing the contract happens at the dock: that is where the payment lands. */
 export function completeDock(run: Run, world: World): RunSignal[] {
   if (run.complete || run.failed) return [];
-  if (distance(world.ship.position, STATION) >= 115 || length(world.ship.velocity) >= 8) return [];
+  if (!canDock(world.ship)) return [];
   run.docked = true;
   return updateRun(run, world, 0);
 }
 
 export function dockable(run: Run, world: World): boolean {
-  return !run.complete && !run.failed && distance(world.ship.position, STATION) < 115 && length(world.ship.velocity) < 8;
+  return !run.complete && !run.failed && canDock(world.ship);
 }
 
 /** Where the navigation computer would send a pilot next: the nearest unfinished objective. */
