@@ -139,7 +139,7 @@ export function buildShip(shipClass: ShipClass = 'kestrel'): ShipModel {
 
 export function buildAsteroid(radius: number, seed: number) {
   const rand = randomSeed(seed);
-  const base = new THREE.IcosahedronGeometry(radius, 5);
+  const base = new THREE.IcosahedronGeometry(radius, radius > 46 ? 5 : 4);
   base.deleteAttribute('normal');
   const geometry = mergeVertices(base);
   base.dispose();
@@ -214,4 +214,58 @@ export function disposeObject(object: THREE.Object3D) {
     if (child instanceof THREE.Mesh || child instanceof THREE.Line || child instanceof THREE.Points) child.geometry.dispose();
   });
   object.removeFromParent();
+}
+
+const beaconLampMaterial = new THREE.MeshBasicMaterial({ color: '#dce6e8' });
+const beaconHaloMaterial = new THREE.MeshBasicMaterial({ color: '#83b9b5', transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+const warmLampMaterial = new THREE.MeshBasicMaterial({ color: '#efb879' });
+const scorch = new THREE.MeshStandardMaterial({ color: '#181512', roughness: 0.94, metalness: 0.4 });
+const rust = new THREE.MeshStandardMaterial({ color: '#5f4132', roughness: 0.92, metalness: 0.45 });
+
+export type BeaconModel = { group: THREE.Group; lamp: THREE.Mesh; halo: THREE.Mesh };
+
+export function buildBeacon(): BeaconModel {
+  const group = new THREE.Group();
+  cylinder(group, metal, 7, 9, 13, [0, 1, 0], 8);
+  cylinder(group, dark, 10, 11, 2, [0, -6.5, 0], 8);
+  cylinder(group, copper, 9.3, 9.3, 1.5, [0, 7.1, 0], 8);
+  for (let i = 0; i < 4; i++) {
+    const angle = Math.PI / 4 + i * Math.PI / 2;
+    box(group, dark, [12, 5.5, 0.7], [Math.cos(angle) * 9, 1 + Math.sin(angle) * 9, 0], angle);
+  }
+  cylinder(group, metal, 1.1, 3, 7.5, [0, 11.8, 0], 8);
+  box(group, lightArmor, [4.4, 2.4, 2.4], [0, 15.6, 0]);
+  box(group, metal, [10, 0.5, 0.5], [0, 15.6, 1.2]);
+  const lamp = new THREE.Mesh(new THREE.SphereGeometry(1.6, 10, 10), beaconLampMaterial);
+  lamp.position.set(0, 17.6, 2.6); group.add(lamp);
+  const halo = new THREE.Mesh(new THREE.RingGeometry(2.4, 7, 32), beaconHaloMaterial);
+  halo.position.set(0, 17.6, 2.3); group.add(halo);
+  return { group, lamp, halo };
+}
+
+export type DerelictModel = { group: THREE.Group; lamp: THREE.Mesh; debris: THREE.Mesh[] };
+
+export function buildDerelict(): DerelictModel {
+  const group = new THREE.Group();
+  const debris: THREE.Mesh[] = [];
+  hull(group, 30, 80, 15, dark, 0, 28, 0);
+  hull(group, 20, 34, 10, armor, 0, 48, 9);
+  const aft = hull(group, 26, 62, 12, metal, -7, -50, 1);
+  aft.rotation.z = 0.16;
+  hull(group, 16, 26, 8, rust, -10, -72, 6);
+  for (let i = 0; i < 12; i++) box(group, i % 3 ? metal : black, [22 - i * 0.6, 1.2, 2.2], [0, -10 - i * 5.4, 7.6]);
+  box(group, armor, [18, 26, 1.6], [13, -18, 4], 0.42);
+  box(group, lightArmor, [14, 34, 1.4], [-14, -24, 5], -0.6);
+  box(group, metal, [20, 22, 1.8], [8, -6, 6], 0.2);
+  box(group, rust, [12, 30, 1.2], [-11, -60, 5], 0.9);
+  box(group, scorch, [9, 18, 1], [15, -46, 5], -0.35);
+  const bell = cylinder(group, metal, 8, 11, 12, [-9, -82, 1]);
+  bell.rotation.z = 0.16;
+  const cap = cylinder(group, scorch, 11.4, 11.4, 1.2, [-10, -88.4, 1]);
+  cap.rotation.z = 0.16;
+  const lamp = new THREE.Mesh(new THREE.SphereGeometry(1.4, 10, 10), warmLampMaterial);
+  lamp.position.set(-11, -62, 9); group.add(lamp);
+  debris.push(box(group, lightArmor, [16, 24, 1.5], [26, -34, 3], 0.5));
+  debris.push(box(group, armor, [14, 20, 1.4], [-32, -16, 4], -0.8));
+  return { group, lamp, debris };
 }

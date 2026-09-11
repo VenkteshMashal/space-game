@@ -85,13 +85,21 @@ export function stepShip(state: ShipState, input: FlightInput, dt: number) {
 }
 
 export type Obstacle = { x: number; y: number; radius: number; seed: number; z: number };
-export type Cargo = { id: string; name: string; position: Vec2; collected: boolean };
-export const STATION = { x: 660, y: 530 };
+export type CargoKind = 'archive' | 'blackbox';
+export type Cargo = { id: string; name: string; kind: CargoKind; position: Vec2; collected: boolean };
+
+/** The playable volume: a 5.2 x 4.2 km slab of the Nereid recovery zone. */
+export const SECTOR = { minX: -2600, maxX: 2600, minY: -2100, maxY: 2100 };
+export const STATION = { x: 1560, y: 1180 };
+export const RELAY = { x: -640, y: -520 };
+export const DERELICT = { x: -1180, y: 1760 };
+
 export function createCargo(): Cargo[] {
   return [
-    { id: 'cargo-1', name: 'Flight recorder', position: { x: 220, y: 190 }, collected: false },
-    { id: 'cargo-2', name: 'Research canister', position: { x: -240, y: 390 }, collected: false },
-    { id: 'cargo-3', name: 'Survey archive', position: { x: 450, y: -200 }, collected: false },
+    { id: 'cargo-1', name: 'Flight recorder', kind: 'archive', position: { x: 1020, y: -1380 }, collected: false },
+    { id: 'cargo-2', name: 'Research canister', kind: 'archive', position: { x: -1520, y: 420 }, collected: false },
+    { id: 'cargo-3', name: 'Survey archive', kind: 'archive', position: { x: 300, y: 1860 }, collected: false },
+    { id: 'blackbox', name: 'Kite’s End black box', kind: 'blackbox', position: { ...DERELICT }, collected: false },
   ];
 }
 
@@ -107,13 +115,18 @@ export function randomSeed(seed: number) {
 export function createObstacles(): Obstacle[] {
   const rand = randomSeed(4712);
   const rocks: Obstacle[] = [];
-  const cargo = createCargo();
-  for (let i = 0; i < 90; i++) {
-    const x = (rand() - 0.5) * 2600;
-    const y = (rand() - 0.5) * 2100;
-    const radius = 9 + Math.pow(rand(), 2) * 62;
-    if (Math.hypot(x, y) < radius + 145 || distance({ x, y }, STATION) < radius + 155 || cargo.some(c => distance(c.position, { x, y }) < radius + 100)) continue;
-    rocks.push({ x, y, radius, seed: i + 12, z: i % 4 === 0 ? -100 - rand() * 170 : 0 });
+  const keeps: { x: number; y: number; radius: number }[] = [
+    ...createCargo().map(cargo => ({ ...cargo.position, radius: cargo.kind === 'blackbox' ? 200 : 135 })),
+    { ...STATION, radius: 320 },
+    { ...RELAY, radius: 175 },
+  ];
+  for (let i = 0; i < 460; i++) {
+    const x = (rand() - 0.5) * 5200;
+    const y = (rand() - 0.5) * 4200;
+    const radius = 8 + Math.pow(rand(), 2) * 76;
+    if (Math.hypot(x, y) < radius + 150) continue;
+    if (keeps.some(keep => distance(keep, { x, y }) < radius + keep.radius * 0.8)) continue;
+    rocks.push({ x, y, radius, seed: i + 12, z: i % 5 === 0 ? -120 - rand() * 210 : 0 });
   }
   return rocks;
 }
@@ -134,7 +147,8 @@ export function resolveCollision(state: ShipState, rock: Obstacle): number {
   if (closingSpeed >= 0) return 0;
   state.velocity.x -= 1.3 * closingSpeed * nx;
   state.velocity.y -= 1.3 * closingSpeed * ny;
-  const damage = Math.max(0, -closingSpeed - 2) * 1.5;
+  // Hull damage scales with closing speed but is capped, so a long high-speed leg cannot one-shot the ship.
+  const damage = Math.min(42, Math.max(0, -closingSpeed - 4) * 0.9);
   state.hull = Math.max(0, state.hull - damage);
   return damage;
 }

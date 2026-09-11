@@ -11,6 +11,8 @@ const paths: Record<string, string> = {
   cross: '<path d="m6 6 12 12M6 18 18 6"/>',
   target: '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3"/>',
   box: '<path d="m12 3 8 4v10l-8 4-8-4V7l8-4Z"/><path d="m4 7 8 4 8-4m-8 4v10m-4-16 8 4"/>',
+  beacon: '<path d="M12 21V9m-4 12h8"/><path d="m12 3 3.4 5.4h-6.8L12 3Z"/><path d="M5.6 13a8.6 8.6 0 0 1 12.8 0"/>',
+  derelict: '<path d="M3 17l5-5 3.6 3L17 8l4 9"/><path d="M3 20h18l-2.4-3H5.4L3 20Z"/><path d="M9 6.5l1.4 2.6"/>',
   station: '<circle cx="12" cy="12" r="5"/><path d="M2 8h4v8H2zM18 8h4v8h-4zM12 2v5m0 10v5M8 2h8M8 22h8"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
   arrow: '<path d="M5 12h14m-5-5 5 5-5 5"/>',
